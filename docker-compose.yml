@@ -1,0 +1,28 @@
+services:
+ dbbackup:
+    build: .
+    hostname: dbbackup
+    container_name: dbbackup
+    restart: unless-stopped
+    volumes:
+      - ./app:/app
+      - /opt:/opt
+      - /backups/chaos/databases:/dest
+    networks:
+      postgres: null
+      mariadb: null
+      redis: null
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    env_file:
+      - .env
+networks:
+  postgres:
+    external: true
+    name: postgres-net
+  mariadb:
+    external: true
+    name: mariadb-net
+  redis:
+    external: true
+    name: redis-net
