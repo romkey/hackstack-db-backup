@@ -31,7 +31,7 @@ RUN rm -rf /var/cache/apk/* /tmp/* /usr/lib/ruby/gems/*/cache/*
 WORKDIR /app
 
 # Copy the Ruby script into the container
-COPY backup.rb /app/
+COPY app/backup.rb /app/
 
 # Make the script executable
 RUN chmod +x /app/backup.rb
