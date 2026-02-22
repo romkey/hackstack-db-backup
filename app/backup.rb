@@ -22,7 +22,14 @@ OPTIONS = options.freeze
 PARENT_DIR = ENV['PARENT_DIR']
 DEST_DIR = ENV['DEST_DIR']
 SLACK_WEBHOOK_URL = ENV['SLACK_WEBHOOK_URL']
-BACKUP_RETENTION_COUNT = (ENV['BACKUP_RETENTION_COUNT'] || '5').to_i
+
+# Tiered backup retention configuration (defaults to 6 for each tier)
+DEFAULT_RETENTION = 6
+BACKUP_RETAIN_HOURLY = (ENV['BACKUP_RETAIN_HOURLY'] || DEFAULT_RETENTION).to_i
+BACKUP_RETAIN_DAILY = (ENV['BACKUP_RETAIN_DAILY'] || DEFAULT_RETENTION).to_i
+BACKUP_RETAIN_WEEKLY = (ENV['BACKUP_RETAIN_WEEKLY'] || DEFAULT_RETENTION).to_i
+BACKUP_RETAIN_MONTHLY = (ENV['BACKUP_RETAIN_MONTHLY'] || DEFAULT_RETENTION).to_i
+BACKUP_RETAIN_YEARLY = (ENV['BACKUP_RETAIN_YEARLY'] || DEFAULT_RETENTION).to_i
 
 # Validate required environment variables
 def validate_environment!
@@ -170,19 +177,92 @@ def process_directory(dir)
   pids
 end
 
+def parse_backup_timestamp(filename)
+  # Extract timestamp from filename format: backup-{dbname}-{YYYYMMDDHHMMSS}.{ext}.bz2
+  if filename =~ /backup-.*-(\d{14})\.(sql|rdb)(\.bz2)?$/
+    Time.strptime($1, "%Y%m%d%H%M%S")
+  else
+    nil
+  end
+end
+
+def extract_dbname(filename)
+  # Extract database name from filename: backup-{dbname}-{timestamp}.{ext}.bz2
+  if filename =~ /backup-(.+)-\d{14}\.(sql|rdb)(\.bz2)?$/
+    $1
+  else
+    nil
+  end
+end
+
+def categorize_backups(backup_files)
+  # Group backups by their time bucket, keeping the most recent backup for each bucket
+  hourly = {}   # key: "YYYY-MM-DD-HH"
+  daily = {}    # key: "YYYY-MM-DD"
+  weekly = {}   # key: "YYYY-WW" (ISO week)
+  monthly = {}  # key: "YYYY-MM"
+  yearly = {}   # key: "YYYY"
+
+  # Sort by timestamp descending (newest first)
+  sorted_files = backup_files.map { |f| [f, parse_backup_timestamp(File.basename(f))] }
+                             .reject { |_, ts| ts.nil? }
+                             .sort_by { |_, ts| -ts.to_i }
+
+  sorted_files.each do |file, timestamp|
+    hour_key = timestamp.strftime("%Y-%m-%d-%H")
+    day_key = timestamp.strftime("%Y-%m-%d")
+    week_key = timestamp.strftime("%G-%V")  # ISO week
+    month_key = timestamp.strftime("%Y-%m")
+    year_key = timestamp.strftime("%Y")
+
+    # Keep the newest backup for each time bucket
+    hourly[hour_key] ||= file
+    daily[day_key] ||= file
+    weekly[week_key] ||= file
+    monthly[month_key] ||= file
+    yearly[year_key] ||= file
+  end
+
+  {
+    hourly: hourly.values.take(BACKUP_RETAIN_HOURLY),
+    daily: daily.values.take(BACKUP_RETAIN_DAILY),
+    weekly: weekly.values.take(BACKUP_RETAIN_WEEKLY),
+    monthly: monthly.values.take(BACKUP_RETAIN_MONTHLY),
+    yearly: yearly.values.take(BACKUP_RETAIN_YEARLY)
+  }
+end
+
 def cleanup_old_backups(dir)
   backup_subdir = File.join(DEST_DIR, File.basename(dir))
   return unless File.directory?(backup_subdir)
 
-  # Clean up both SQL and RDB backup files
-  ['backup-*.sql.bz2', 'backup-*.rdb.bz2'].each do |pattern|
-    backup_files = Dir.glob(File.join(backup_subdir, pattern)).sort_by { |f| File.mtime(f) }
-    if backup_files.size > BACKUP_RETENTION_COUNT
-      files_to_delete = backup_files[0..-(BACKUP_RETENTION_COUNT + 1)]
-      files_to_delete.each do |file|
+  # Group backup files by database name
+  all_files = Dir.glob(File.join(backup_subdir, 'backup-*.{sql,rdb}.bz2')) +
+              Dir.glob(File.join(backup_subdir, 'backup-*.{sql,rdb}'))
+
+  files_by_db = all_files.group_by { |f| extract_dbname(File.basename(f)) }
+                         .reject { |k, _| k.nil? }
+
+  files_by_db.each do |dbname, files|
+    # Categorize backups into retention tiers
+    retained = categorize_backups(files)
+
+    # Collect all files to keep (union of all tiers)
+    files_to_keep = (retained[:hourly] + retained[:daily] + retained[:weekly] +
+                     retained[:monthly] + retained[:yearly]).uniq
+
+    # Delete files not in any retention tier
+    files.each do |file|
+      unless files_to_keep.include?(file)
         File.delete(file)
         puts "Deleted old backup file: #{file}" unless OPTIONS[:quiet]
       end
+    end
+
+    unless OPTIONS[:quiet]
+      puts "Retention for #{dbname}: #{retained[:hourly].size} hourly, " \
+           "#{retained[:daily].size} daily, #{retained[:weekly].size} weekly, " \
+           "#{retained[:monthly].size} monthly, #{retained[:yearly].size} yearly"
     end
   end
 end

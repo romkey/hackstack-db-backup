@@ -1,43 +1,21 @@
-FROM alpine:latest
+FROM alpine:3.19
 
-# Install dependencies
-RUN apk update && apk upgrade && \
-    apk add --no-cache \
-    build-base \
-    curl \
-    git \
-    libffi-dev \
-    openssl-dev \
-    readline-dev \
-    sqlite-dev \
-    zlib-dev \
+# Install only runtime dependencies - no build tools needed
+RUN apk add --no-cache \
+    ruby \
     mariadb-client \
-    postgresql-client \
+    postgresql16-client \
     sqlite \
     redis \
     bzip2 \
-    bash \
-    tzdata
+    tzdata \
+    && rm -rf /var/cache/apk/* /tmp/*
 
-# Install Ruby
-RUN apk add --no-cache ruby ruby-dev && \
-    gem update --system && \
-    gem install bundler
-
-# Clean up
-RUN rm -rf /var/cache/apk/* /tmp/* /usr/lib/ruby/gems/*/cache/*
-
-# Create a directory for the app
 WORKDIR /app
 
-# Copy the Ruby script into the container
 COPY app/backup.rb /app/
 
-# Make the script executable
 RUN chmod +x /app/backup.rb
 
-# Set the entrypoint to the Ruby script
 ENTRYPOINT ["ruby", "/app/backup.rb"]
-
-# This will allow you to pass any additional arguments to the script
 CMD []
