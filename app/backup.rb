@@ -23,6 +23,9 @@ PARENT_DIR = ENV['PARENT_DIR']
 DEST_DIR = ENV['DEST_DIR']
 SLACK_WEBHOOK_URL = ENV['SLACK_WEBHOOK_URL']
 
+# Backup interval in minutes (default: 60)
+BACKUP_INTERVAL_MINUTES = (ENV['BACKUP_INTERVAL_MINUTES'] || '60').to_i
+
 # Tiered backup retention configuration (defaults to 6 for each tier)
 DEFAULT_RETENTION = 6
 BACKUP_RETAIN_HOURLY = (ENV['BACKUP_RETAIN_HOURLY'] || DEFAULT_RETENTION).to_i
@@ -267,44 +270,64 @@ def cleanup_old_backups(dir)
   end
 end
 
+def run_backup_cycle
+  all_pids = []
+  successful_backups = 0
+  failed_backups = 0
+
+  Dir.foreach(PARENT_DIR) do |entry|
+    next if entry == '.' || entry == '..'
+
+    dir = File.join(PARENT_DIR, entry)
+    if File.directory?(dir)
+      pids = process_directory(dir)
+      all_pids.concat(pids)
+    end
+  end
+
+  # Wait for all backup processes to complete and track results
+  all_pids.each do |pid|
+    _pid, status = Process.wait2(pid)
+    if status.exitstatus == 0
+      successful_backups += 1
+    else
+      failed_backups += 1
+    end
+  end
+
+  # Clean up old backups after all processes are complete
+  Dir.foreach(PARENT_DIR) do |entry|
+    next if entry == '.' || entry == '..'
+
+    dir = File.join(PARENT_DIR, entry)
+    cleanup_old_backups(dir) if File.directory?(dir)
+  end
+
+  # Send summary notification
+  if successful_backups > 0 || failed_backups > 0
+    summary = "Backup complete: #{successful_backups} succeeded, #{failed_backups} failed"
+    puts summary unless OPTIONS[:quiet]
+    post_to_slack(summary) if failed_backups == 0 && successful_backups > 0
+  end
+end
+
 # Main execution
 validate_environment!
 
-all_pids = []
-successful_backups = 0
-failed_backups = 0
+puts "Starting backup service (interval: #{BACKUP_INTERVAL_MINUTES} minutes)" unless OPTIONS[:quiet]
 
-Dir.foreach(PARENT_DIR) do |entry|
-  next if entry == '.' || entry == '..'
+loop do
+  start_time = Time.now
+  puts "Starting backup cycle at #{start_time}" unless OPTIONS[:quiet]
 
-  dir = File.join(PARENT_DIR, entry)
-  if File.directory?(dir)
-    pids = process_directory(dir)
-    all_pids.concat(pids)
-  end
-end
+  run_backup_cycle
 
-# Wait for all backup processes to complete and track results
-all_pids.each do |pid|
-  _pid, status = Process.wait2(pid)
-  if status.exitstatus == 0
-    successful_backups += 1
-  else
-    failed_backups += 1
-  end
-end
+  elapsed = Time.now - start_time
+  puts "Backup cycle completed in #{elapsed.round(1)} seconds" unless OPTIONS[:quiet]
 
-# Clean up old backups after all processes are complete
-Dir.foreach(PARENT_DIR) do |entry|
-  next if entry == '.' || entry == '..'
+  sleep_seconds = BACKUP_INTERVAL_MINUTES * 60
+  next_run = Time.now + sleep_seconds
+  puts "Next backup at #{next_run}" unless OPTIONS[:quiet]
 
-  dir = File.join(PARENT_DIR, entry)
-  cleanup_old_backups(dir) if File.directory?(dir)
-end
-
-# Send summary notification
-if successful_backups > 0 || failed_backups > 0
-  summary = "Backup complete: #{successful_backups} succeeded, #{failed_backups} failed"
-  puts summary unless OPTIONS[:quiet]
-  post_to_slack(summary) if failed_backups == 0 && successful_backups > 0
+  sleep(sleep_seconds)
 end

@@ -1,9 +1,10 @@
 # db-backup
 
-A Ruby-based database backup utility designed for Docker-based multi-application environments. Automatically discovers and backs up databases from application directories, with tiered retention policies for efficient storage management.
+A Ruby-based database backup utility designed for Docker-based multi-application environments. Runs continuously, automatically discovering and backing up databases from application directories at configurable intervals, with tiered retention policies for efficient storage management.
 
 ## Features
 
+- **Continuous operation**: Runs as a long-lived service with configurable backup intervals
 - **Multi-database support**: PostgreSQL, MySQL/MariaDB, SQLite, and Redis
 - **Automatic discovery**: Scans directories for `.env` files with database URLs
 - **Parallel backups**: Uses forking for concurrent backup operations
@@ -20,12 +21,14 @@ A Ruby-based database backup utility designed for Docker-based multi-application
 services:
   dbbackup:
     image: ghcr.io/romkey/hackstack-db-backup:latest
+    restart: unless-stopped
     volumes:
       - /opt/docker:/opt/docker:ro    # Application directories
       - /backups/databases:/dest       # Backup destination
     environment:
       - PARENT_DIR=/opt/docker
       - DEST_DIR=/dest
+      - BACKUP_INTERVAL_MINUTES=60
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
     networks:
       - postgres-net
@@ -36,11 +39,12 @@ services:
 ### Running Manually
 
 ```bash
-docker run --rm \
+docker run -d \
   -v /opt/docker:/opt/docker:ro \
   -v /backups:/dest \
   -e PARENT_DIR=/opt/docker \
   -e DEST_DIR=/dest \
+  -e BACKUP_INTERVAL_MINUTES=60 \
   ghcr.io/romkey/hackstack-db-backup:latest
 ```
 
@@ -52,6 +56,7 @@ docker run --rm \
 |----------|----------|---------|-------------|
 | `PARENT_DIR` | Yes | - | Directory to scan for application subdirectories |
 | `DEST_DIR` | Yes | - | Destination directory for backup files |
+| `BACKUP_INTERVAL_MINUTES` | No | 60 | Minutes between backup cycles |
 | `SLACK_WEBHOOK_URL` | No | - | Slack webhook URL for notifications |
 | `BACKUP_RETAIN_HOURLY` | No | 6 | Number of hourly backups to retain |
 | `BACKUP_RETAIN_DAILY` | No | 6 | Number of daily backups to retain |
@@ -106,16 +111,7 @@ Backup files are stored as:
 
 | Option | Description |
 |--------|-------------|
-| `--quiet` | Suppress all output (useful for cron jobs) |
-
-## Scheduling
-
-For automated backups, use cron or a container orchestrator's scheduling feature:
-
-```bash
-# Run hourly backups via cron
-0 * * * * docker run --rm -v /opt:/opt:ro -v /backups:/dest -e PARENT_DIR=/opt/docker -e DEST_DIR=/dest --quiet ghcr.io/romkey/hackstack-db-backup:latest --quiet
-```
+| `--quiet` | Suppress all output except errors |
 
 ## Development
 
@@ -125,10 +121,16 @@ For automated backups, use cron or a container orchestrator's scheduling feature
 docker build -t db-backup .
 ```
 
-### Running Tests
+### Running in Foreground
 
 ```bash
-docker run --rm db-backup --quiet
+docker run --rm \
+  -e PARENT_DIR=/opt/docker \
+  -e DEST_DIR=/dest \
+  -e BACKUP_INTERVAL_MINUTES=5 \
+  -v /opt/docker:/opt/docker:ro \
+  -v /backups:/dest \
+  db-backup
 ```
 
 ## License
