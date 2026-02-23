@@ -1,13 +1,13 @@
 services:
- dbbackup:
+  dbbackup:
     build: .
     hostname: dbbackup
     container_name: dbbackup
     restart: unless-stopped
     volumes:
       - ./app:/app
-      - /opt:/opt
-      - /backups/chaos/databases:/dest
+      - /opt:/opt:ro
+      - backup_nfs:/dest
     networks:
       postgres: null
       mariadb: null
@@ -16,6 +16,15 @@ services:
       - "com.centurylinklabs.watchtower.enable=false"
     env_file:
       - .env
+
+volumes:
+  backup_nfs:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER},${NFS_OPTIONS:-nfsvers=4,soft,rw}
+      device: ":${NFS_PATH}"
+
 networks:
   postgres:
     external: true

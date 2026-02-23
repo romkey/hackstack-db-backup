@@ -17,23 +17,30 @@ A Ruby-based database backup utility designed for Docker-based multi-application
 
 ### Using Docker Compose
 
+The included `docker-compose.yml` supports NFS storage for backups:
+
 ```yaml
 services:
   dbbackup:
     image: ghcr.io/romkey/hackstack-db-backup:latest
     restart: unless-stopped
     volumes:
-      - /opt/docker:/opt/docker:ro    # Application directories
-      - /backups/databases:/dest       # Backup destination
-    environment:
-      - PARENT_DIR=/opt/docker
-      - DEST_DIR=/dest
-      - BACKUP_INTERVAL_MINUTES=60
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - /opt:/opt:ro
+      - backup_nfs:/dest
+    env_file:
+      - .env
     networks:
       - postgres-net
       - mariadb-net
       - redis-net
+
+volumes:
+  backup_nfs:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER},${NFS_OPTIONS:-nfsvers=4,soft,rw}
+      device: ":${NFS_PATH}"
 ```
 
 ### Running Manually
@@ -63,6 +70,23 @@ docker run -d \
 | `BACKUP_RETAIN_WEEKLY` | No | 6 | Number of weekly backups to retain |
 | `BACKUP_RETAIN_MONTHLY` | No | 6 | Number of monthly backups to retain |
 | `BACKUP_RETAIN_YEARLY` | No | 6 | Number of yearly backups to retain |
+
+### NFS Volume Configuration (Docker Compose)
+
+The included `docker-compose.yml` uses an NFS volume for backup storage. Configure these variables in your `.env` file:
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `NFS_SERVER` | Yes | - | NFS server IP address or hostname |
+| `NFS_PATH` | Yes | - | Export path on the NFS server |
+| `NFS_OPTIONS` | No | `nfsvers=4,soft,rw` | NFS mount options |
+
+Example:
+```bash
+NFS_SERVER=192.168.1.100
+NFS_PATH=/volume1/backups/databases
+NFS_OPTIONS=nfsvers=4,soft,rw
+```
 
 ### Application Configuration
 
