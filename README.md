@@ -30,8 +30,7 @@ services:
     env_file:
       - .env
     networks:
-      - postgres-net
-      - mariadb-net
+      - backup-net
 
 volumes:
   backup_nfs:
@@ -40,6 +39,30 @@ volumes:
       type: nfs
       o: addr=${NFS_SERVER},${NFS_OPTIONS:-nfsvers=4,soft,rw}
       device: ":${NFS_PATH}"
+
+networks:
+  backup-net:
+    name: dbbackup-net
+```
+
+### Network Configuration
+
+The recommended approach is to create a single backup network (`dbbackup-net`) and add each database container to it. This allows db-backup to work in environments that don't run all supported database types.
+
+In each database's compose file, add the backup network:
+
+```yaml
+services:
+  postgres:
+    # ... other config ...
+    networks:
+      - default
+      - backup-net
+
+networks:
+  backup-net:
+    external: true
+    name: dbbackup-net
 ```
 
 ### Running Manually
@@ -70,9 +93,9 @@ docker run -d \
 | `BACKUP_RETAIN_MONTHLY` | No | 6 | Number of monthly backups to retain |
 | `BACKUP_RETAIN_YEARLY` | No | 6 | Number of yearly backups to retain |
 
-### NFS Volume Configuration (Docker Compose)
+### NFS Volume Configuration
 
-The example `docker-compose.example.yml` uses an NFS volume for backup storage. Configure these variables in your `.env` file:
+The example compose file uses an NFS volume for backup storage. Configure these variables in your `.env` file:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|

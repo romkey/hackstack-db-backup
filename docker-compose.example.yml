@@ -1,6 +1,6 @@
 services:
   dbbackup:
-    build: .
+    image: ghcr.io/romkey/hackstack-db-backup:latest
     hostname: dbbackup
     container_name: dbbackup
     restart: unless-stopped
@@ -9,10 +9,7 @@ services:
       - /opt:/opt:ro
       - backup_nfs:/dest
     networks:
-      postgres: null
-      mariadb: null
-    labels:
-      - "com.centurylinklabs.watchtower.enable=false"
+      - backup-net
     env_file:
       - .env
 
@@ -25,9 +22,5 @@ volumes:
       device: ":${NFS_PATH}"
 
 networks:
-  postgres:
-    external: true
-    name: postgres-net
-  mariadb:
-    external: true
-    name: mariadb-net
+  backup-net:
+    name: dbbackup-net
