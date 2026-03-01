@@ -148,10 +148,6 @@ module BackupService
       when /^sqlite:\/\/(\/.*)$/
         db_path = $1
         "sqlite3 #{Shellwords.escape(db_path)} .dump > #{Shellwords.escape(backup_file)} 2>&1"
-      when /^redis:\/\/(?:([^:]*):)?([^@]*)@([^:]*):(\d+)\/(.*)$/
-        _user, password, host, port, dbname = $1, $2, $3, $4, $5
-        auth_args = password && !password.empty? ? "-a #{Shellwords.escape(password)}" : ""
-        "redis-cli -h #{Shellwords.escape(host)} -p #{Shellwords.escape(port)} #{auth_args} -n #{Shellwords.escape(dbname)} --rdb #{Shellwords.escape(backup_file)} 2>&1"
       else
         nil
       end
@@ -226,9 +222,6 @@ module BackupService
         db_path = $1
         dbname = File.basename(db_path, ".*")
         "backup-#{dbname}-#{timestamp}.sql"
-      when /^redis:\/\/(?:[^:]*:)?[^@]*@[^:]*:\d+\/(.*)$/
-        dbname = $1
-        "backup-#{dbname}-#{timestamp}.rdb"
       when /^qdrant:\/\/(?:[^@]+@)?[^:]+:\d+\/(.+)$/
         collection = $1
         "backup-#{collection}-#{timestamp}.snapshot"
@@ -266,7 +259,7 @@ module BackupService
     end
 
     def parse_backup_timestamp(filename)
-      if filename =~ /backup-.*-(\d{14})\.(sql|rdb|snapshot)(\.bz2)?$/
+      if filename =~ /backup-.*-(\d{14})\.(sql|snapshot)(\.bz2)?$/
         Time.strptime($1, "%Y%m%d%H%M%S")
       else
         nil
@@ -274,7 +267,7 @@ module BackupService
     end
 
     def extract_dbname(filename)
-      if filename =~ /backup-(.+)-\d{14}\.(sql|rdb|snapshot)(\.bz2)?$/
+      if filename =~ /backup-(.+)-\d{14}\.(sql|snapshot)(\.bz2)?$/
         $1
       else
         nil
@@ -319,8 +312,8 @@ module BackupService
       backup_subdir = File.join(config.dest_dir, File.basename(dir))
       return unless File.directory?(backup_subdir)
 
-      all_files = Dir.glob(File.join(backup_subdir, 'backup-*.{sql,rdb,snapshot}.bz2')) +
-                  Dir.glob(File.join(backup_subdir, 'backup-*.{sql,rdb,snapshot}'))
+      all_files = Dir.glob(File.join(backup_subdir, 'backup-*.{sql,snapshot}.bz2')) +
+                  Dir.glob(File.join(backup_subdir, 'backup-*.{sql,snapshot}'))
 
       files_by_db = all_files.group_by { |f| extract_dbname(File.basename(f)) }
                              .reject { |k, _| k.nil? }

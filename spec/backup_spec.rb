@@ -132,34 +132,6 @@ RSpec.describe BackupService do
         end
       end
 
-      context 'Redis URLs' do
-        it 'builds correct command with password' do
-          url = 'redis://:secretpass@localhost:6379/0'
-          command = backup.build_backup_command(url, '/backup/test.rdb')
-
-          expect(command).to include('redis-cli')
-          expect(command).to include('-h localhost')
-          expect(command).to include('-p 6379')
-          expect(command).to include('-a secretpass')
-          expect(command).to include('-n 0')
-          expect(command).to include('--rdb /backup/test.rdb')
-        end
-
-        it 'builds correct command with username and password' do
-          url = 'redis://user:secretpass@localhost:6379/0'
-          command = backup.build_backup_command(url, '/backup/test.rdb')
-
-          expect(command).to include('-a secretpass')
-        end
-
-        it 'omits auth flag when password is empty' do
-          url = 'redis://:@localhost:6379/0'
-          command = backup.build_backup_command(url, '/backup/test.rdb')
-
-          expect(command).not_to include('-a')
-        end
-      end
-
       context 'Qdrant URLs' do
         it 'returns nil for Qdrant (handled separately)' do
           url = 'qdrant://localhost:6333/my_collection'
@@ -210,13 +182,6 @@ RSpec.describe BackupService do
         expect(filename).to eq('backup-application-20240115120000.sql')
       end
 
-      it 'generates .rdb filename for Redis' do
-        url = 'redis://:pass@localhost:6379/2'
-        filename = backup.generate_backup_filename(url, timestamp)
-
-        expect(filename).to eq('backup-2-20240115120000.rdb')
-      end
-
       it 'generates .snapshot filename for Qdrant' do
         url = 'qdrant://localhost:6333/embeddings'
         filename = backup.generate_backup_filename(url, timestamp)
@@ -249,20 +214,6 @@ RSpec.describe BackupService do
 
       it 'parses timestamp from compressed SQL backup' do
         filename = 'backup-mydb-20240115143022.sql.bz2'
-        timestamp = backup.parse_backup_timestamp(filename)
-
-        expect(timestamp).to eq(Time.new(2024, 1, 15, 14, 30, 22))
-      end
-
-      it 'parses timestamp from RDB backup filename' do
-        filename = 'backup-0-20240115143022.rdb'
-        timestamp = backup.parse_backup_timestamp(filename)
-
-        expect(timestamp).to eq(Time.new(2024, 1, 15, 14, 30, 22))
-      end
-
-      it 'parses timestamp from compressed RDB backup' do
-        filename = 'backup-0-20240115143022.rdb.bz2'
         timestamp = backup.parse_backup_timestamp(filename)
 
         expect(timestamp).to eq(Time.new(2024, 1, 15, 14, 30, 22))
@@ -317,13 +268,6 @@ RSpec.describe BackupService do
         dbname = backup.extract_dbname(filename)
 
         expect(dbname).to eq('mydb')
-      end
-
-      it 'extracts database name from RDB backup' do
-        filename = 'backup-0-20240115143022.rdb.bz2'
-        dbname = backup.extract_dbname(filename)
-
-        expect(dbname).to eq('0')
       end
 
       it 'extracts collection name from snapshot backup' do
@@ -594,13 +538,11 @@ RSpec.describe BackupService do
 
       it 'handles mixed file types' do
         FileUtils.touch('/test/dest/myapp/backup-db-20240115120000.sql.bz2')
-        FileUtils.touch('/test/dest/myapp/backup-cache-20240115120000.rdb.bz2')
         FileUtils.touch('/test/dest/myapp/backup-vectors-20240115120000.snapshot.bz2')
 
         backup.cleanup_old_backups('/test/parent/myapp')
 
         expect(File.exist?('/test/dest/myapp/backup-db-20240115120000.sql.bz2')).to be true
-        expect(File.exist?('/test/dest/myapp/backup-cache-20240115120000.rdb.bz2')).to be true
         expect(File.exist?('/test/dest/myapp/backup-vectors-20240115120000.snapshot.bz2')).to be true
       end
 

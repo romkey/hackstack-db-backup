@@ -6,7 +6,6 @@ RUN apk add --no-cache \
     mariadb-client \
     postgresql16-client \
     sqlite \
-    redis \
     bzip2 \
     tzdata \
     && rm -rf /var/cache/apk/* /tmp/*

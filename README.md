@@ -5,7 +5,7 @@ A Ruby-based database backup utility designed for Docker-based multi-application
 ## Features
 
 - **Continuous operation**: Runs as a long-lived service with configurable backup intervals
-- **Multi-database support**: PostgreSQL, MySQL/MariaDB, SQLite, Redis, and Qdrant
+- **Multi-database support**: PostgreSQL, MySQL/MariaDB, SQLite, and Qdrant
 - **Automatic discovery**: Scans directories for `.env` files with database URLs
 - **Parallel backups**: Uses forking for concurrent backup operations
 - **Compression**: Automatic bzip2 compression of backup files
@@ -32,7 +32,6 @@ services:
     networks:
       - postgres-net
       - mariadb-net
-      - redis-net
 
 volumes:
   backup_nfs:
@@ -100,7 +99,7 @@ Multiple database URLs can be specified as a comma-separated list.
 
 Example with all supported databases:
 ```bash
-BACKUP_DATABASE_URLS="postgresql://user:pass@postgres:5432/mydb,redis://:secret@redis:6379/0,qdrant://api-key@qdrant:6333/embeddings"
+BACKUP_DATABASE_URLS="postgresql://user:pass@postgres:5432/mydb,mysql://user:pass@mysql:3306/mydb,qdrant://api-key@qdrant:6333/embeddings"
 ```
 
 ### Supported Database URL Formats
@@ -108,7 +107,6 @@ BACKUP_DATABASE_URLS="postgresql://user:pass@postgres:5432/mydb,redis://:secret@
 - **PostgreSQL**: `postgresql://user:password@host:port/database`
 - **MySQL/MariaDB**: `mysql://user:password@host:port/database`
 - **SQLite**: `sqlite:///path/to/database.db`
-- **Redis**: `redis://:password@host:port/db` or `redis://user:password@host:port/db`
 - **Qdrant**: `qdrant://host:port/collection` or `qdrant://api_key@host:port/collection`
 
 **Note:** If your password contains `@`, URL-encode it as `%40` (e.g., `p%40ssword` for `p@ssword`).
@@ -147,7 +145,7 @@ Backups are deduplicated across tiers - a single backup file may satisfy multipl
 
 Backup files are stored as:
 ```
-{DEST_DIR}/{app_name}/backup-{database_name}-{YYYYMMDDHHMMSS}.{sql|rdb|snapshot}.bz2
+{DEST_DIR}/{app_name}/backup-{database_name}-{YYYYMMDDHHMMSS}.{sql|snapshot}.bz2
 ```
 
 | Database | Extension |
@@ -155,7 +153,6 @@ Backup files are stored as:
 | PostgreSQL | `.sql.bz2` |
 | MySQL/MariaDB | `.sql.bz2` |
 | SQLite | `.sql.bz2` |
-| Redis | `.rdb.bz2` |
 | Qdrant | `.snapshot.bz2` |
 
 ## Command Line Options

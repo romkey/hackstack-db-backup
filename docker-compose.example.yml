@@ -11,7 +11,6 @@ services:
     networks:
       postgres: null
       mariadb: null
-      redis: null
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
     env_file:
@@ -32,6 +31,3 @@ networks:
   mariadb:
     external: true
     name: mariadb-net
-  redis:
-    external: true
-    name: redis-net
