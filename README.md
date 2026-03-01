@@ -17,7 +17,7 @@ A Ruby-based database backup utility designed for Docker-based multi-application
 
 ### Using Docker Compose
 
-The included `docker-compose.yml` supports NFS storage for backups:
+Copy the included `docker-compose.example.yml` to `docker-compose.yml` and customize for your environment. The example supports NFS storage for backups:
 
 ```yaml
 services:
@@ -73,7 +73,7 @@ docker run -d \
 
 ### NFS Volume Configuration (Docker Compose)
 
-The included `docker-compose.yml` uses an NFS volume for backup storage. Configure these variables in your `.env` file:
+The example `docker-compose.example.yml` uses an NFS volume for backup storage. Configure these variables in your `.env` file:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -110,6 +110,8 @@ BACKUP_DATABASE_URLS="postgresql://user:pass@postgres:5432/mydb,redis://:secret@
 - **SQLite**: `sqlite:///path/to/database.db`
 - **Redis**: `redis://:password@host:port/db` or `redis://user:password@host:port/db`
 - **Qdrant**: `qdrant://host:port/collection` or `qdrant://api_key@host:port/collection`
+
+**Note:** If your password contains `@`, URL-encode it as `%40` (e.g., `p%40ssword` for `p@ssword`).
 
 #### Qdrant Notes
 
@@ -181,6 +183,38 @@ docker run --rm \
   -v /backups:/dest \
   db-backup
 ```
+
+### Running Tests
+
+Tests use RSpec with WebMock for HTTP mocking, Timecop for time manipulation, and FakeFS for filesystem mocking.
+
+**Using Docker (recommended):**
+
+```bash
+docker compose -f docker-compose.test.yml up --build
+```
+
+**Using local Ruby:**
+
+```bash
+bundle install
+bundle exec rspec
+```
+
+**Run with verbose output:**
+
+```bash
+bundle exec rspec --format documentation
+```
+
+### Project Files
+
+| File | Description |
+|------|-------------|
+| `docker-compose.example.yml` | Example production compose file with NFS storage |
+| `docker-compose.test.yml` | Compose file for running tests in Docker |
+| `Dockerfile` | Production container image |
+| `Dockerfile.test` | Test container image with dev dependencies |
 
 ## License
 

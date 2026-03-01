@@ -1,0 +1,14 @@
+FROM ruby:3.2-alpine
+
+RUN apk add --no-cache build-base
+
+WORKDIR /
+
+COPY Gemfile ./
+RUN bundle install
+
+COPY .rspec ./
+COPY spec/ ./spec/
+COPY app/ ./app/
+
+CMD ["bundle", "exec", "rspec", "--format", "documentation"]

@@ -1,0 +1,16 @@
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    volumes:
+      - ./app:/app:ro
+      - ./spec:/spec:ro
+      - ./Gemfile:/Gemfile:ro
+      - ./.rspec:/.rspec:ro
+      - bundle_cache:/usr/local/bundle
+    working_dir: /
+    command: bundle exec rspec --format documentation
+
+volumes:
+  bundle_cache:
