@@ -5,7 +5,7 @@ A Ruby-based database backup utility designed for Docker-based multi-application
 ## Features
 
 - **Continuous operation**: Runs as a long-lived service with configurable backup intervals
-- **Multi-database support**: PostgreSQL, MySQL/MariaDB, SQLite, and Redis
+- **Multi-database support**: PostgreSQL, MySQL/MariaDB, SQLite, Redis, and Qdrant
 - **Automatic discovery**: Scans directories for `.env` files with database URLs
 - **Parallel backups**: Uses forking for concurrent backup operations
 - **Compression**: Automatic bzip2 compression of backup files
@@ -98,12 +98,29 @@ BACKUP_DATABASE_URLS="postgresql://user:pass@host:5432/dbname,mysql://user:pass@
 
 Multiple database URLs can be specified as a comma-separated list.
 
+Example with all supported databases:
+```bash
+BACKUP_DATABASE_URLS="postgresql://user:pass@postgres:5432/mydb,redis://:secret@redis:6379/0,qdrant://api-key@qdrant:6333/embeddings"
+```
+
 ### Supported Database URL Formats
 
 - **PostgreSQL**: `postgresql://user:password@host:port/database`
 - **MySQL/MariaDB**: `mysql://user:password@host:port/database`
 - **SQLite**: `sqlite:///path/to/database.db`
 - **Redis**: `redis://:password@host:port/db` or `redis://user:password@host:port/db`
+- **Qdrant**: `qdrant://host:port/collection` or `qdrant://api_key@host:port/collection`
+
+#### Qdrant Notes
+
+Qdrant backups use the [snapshot API](https://qdrant.tech/documentation/concepts/snapshots/) to create point-in-time backups of collections. The backup process:
+
+1. Creates a snapshot on the Qdrant server
+2. Downloads the snapshot file (tar archive)
+3. Compresses it with bzip2
+4. Deletes the remote snapshot to free server storage
+
+For authenticated Qdrant instances, include the API key before the host in the URL.
 
 ## Tiered Retention
 
@@ -128,8 +145,16 @@ Backups are deduplicated across tiers - a single backup file may satisfy multipl
 
 Backup files are stored as:
 ```
-{DEST_DIR}/{app_name}/backup-{database_name}-{YYYYMMDDHHMMSS}.{sql|rdb}.bz2
+{DEST_DIR}/{app_name}/backup-{database_name}-{YYYYMMDDHHMMSS}.{sql|rdb|snapshot}.bz2
 ```
+
+| Database | Extension |
+|----------|-----------|
+| PostgreSQL | `.sql.bz2` |
+| MySQL/MariaDB | `.sql.bz2` |
+| SQLite | `.sql.bz2` |
+| Redis | `.rdb.bz2` |
+| Qdrant | `.snapshot.bz2` |
 
 ## Command Line Options
 

@@ -67,6 +67,85 @@ rescue StandardError => e
   puts "Exception when posting to Slack: #{e.message}" unless OPTIONS[:quiet]
 end
 
+def backup_qdrant(host, port, collection, api_key, backup_file)
+  base_url = "http://#{host}:#{port}"
+  headers = { 'Content-Type' => 'application/json' }
+  headers['api-key'] = api_key if api_key && !api_key.empty?
+
+  begin
+    # Step 1: Create snapshot
+    uri = URI("#{base_url}/collections/#{collection}/snapshots")
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.open_timeout = 30
+    http.read_timeout = 300
+
+    request = Net::HTTP::Post.new(uri.path, headers)
+    response = http.request(request)
+
+    unless response.is_a?(Net::HTTPSuccess)
+      error_message = "Qdrant snapshot creation failed for #{collection}: #{response.code} #{response.body}"
+      puts error_message unless OPTIONS[:quiet]
+      post_to_slack(error_message)
+      return false
+    end
+
+    result = JSON.parse(response.body)
+    snapshot_name = result.dig('result', 'name')
+
+    unless snapshot_name
+      error_message = "Qdrant snapshot creation returned no snapshot name for #{collection}"
+      puts error_message unless OPTIONS[:quiet]
+      post_to_slack(error_message)
+      return false
+    end
+
+    puts "Created Qdrant snapshot: #{snapshot_name}" unless OPTIONS[:quiet]
+
+    # Step 2: Download snapshot
+    download_uri = URI("#{base_url}/collections/#{collection}/snapshots/#{snapshot_name}")
+    download_http = Net::HTTP.new(download_uri.host, download_uri.port)
+    download_http.read_timeout = 600
+
+    download_request = Net::HTTP::Get.new(download_uri.path, headers)
+
+    File.open(backup_file, 'wb') do |file|
+      download_http.request(download_request) do |download_response|
+        unless download_response.is_a?(Net::HTTPSuccess)
+          error_message = "Qdrant snapshot download failed for #{collection}: #{download_response.code}"
+          puts error_message unless OPTIONS[:quiet]
+          post_to_slack(error_message)
+          return false
+        end
+
+        download_response.read_body do |chunk|
+          file.write(chunk)
+        end
+      end
+    end
+
+    puts "Downloaded Qdrant snapshot to #{backup_file}" unless OPTIONS[:quiet]
+
+    # Step 3: Delete remote snapshot to free server storage
+    delete_uri = URI("#{base_url}/collections/#{collection}/snapshots/#{snapshot_name}")
+    delete_http = Net::HTTP.new(delete_uri.host, delete_uri.port)
+    delete_request = Net::HTTP::Delete.new(delete_uri.path, headers)
+    delete_response = delete_http.request(delete_request)
+
+    if delete_response.is_a?(Net::HTTPSuccess)
+      puts "Deleted remote Qdrant snapshot: #{snapshot_name}" unless OPTIONS[:quiet]
+    else
+      puts "Warning: Failed to delete remote Qdrant snapshot #{snapshot_name}: #{delete_response.code}" unless OPTIONS[:quiet]
+    end
+
+    true
+  rescue StandardError => e
+    error_message = "Qdrant backup error for #{collection}: #{e.message}"
+    puts error_message unless OPTIONS[:quiet]
+    post_to_slack(error_message)
+    false
+  end
+end
+
 def backup_database(db_url, backup_file)
   command = case db_url
             when /^postgresql:\/\/([^:]*):([^@]*)@([^:]*):(\d+)\/(.*)$/
@@ -86,6 +165,14 @@ def backup_database(db_url, backup_file)
               _user, password, host, port, dbname = $1, $2, $3, $4, $5
               auth_args = password && !password.empty? ? "-a #{Shellwords.escape(password)}" : ""
               "redis-cli -h #{Shellwords.escape(host)} -p #{Shellwords.escape(port)} #{auth_args} -n #{Shellwords.escape(dbname)} --rdb #{Shellwords.escape(backup_file)} 2>&1"
+            when /^qdrant:\/\/(?:([^@]+)@)?([^:]+):(\d+)\/(.+)$/
+              # Qdrant URL format: qdrant://[api_key@]host:port/collection
+              api_key, host, port, collection = $1, $2, $3, $4
+              success = backup_qdrant(host, port, collection, api_key, backup_file)
+              if success
+                compress_file(backup_file)
+              end
+              return success
             else
               error_message = "Unsupported database URL format: #{db_url}"
               puts error_message unless OPTIONS[:quiet]
@@ -162,6 +249,9 @@ def process_directory(dir)
                       when /^redis:\/\/(?:[^:]*:)?[^@]*@[^:]*:\d+\/(.*)$/
                         dbname = $1
                         "backup-#{dbname}-#{timestamp}.rdb"
+                      when /^qdrant:\/\/(?:[^@]+@)?[^:]+:\d+\/(.+)$/
+                        collection = $1
+                        "backup-#{collection}-#{timestamp}.snapshot"
                       else
                         next
                       end
@@ -182,7 +272,7 @@ end
 
 def parse_backup_timestamp(filename)
   # Extract timestamp from filename format: backup-{dbname}-{YYYYMMDDHHMMSS}.{ext}.bz2
-  if filename =~ /backup-.*-(\d{14})\.(sql|rdb)(\.bz2)?$/
+  if filename =~ /backup-.*-(\d{14})\.(sql|rdb|snapshot)(\.bz2)?$/
     Time.strptime($1, "%Y%m%d%H%M%S")
   else
     nil
@@ -191,7 +281,7 @@ end
 
 def extract_dbname(filename)
   # Extract database name from filename: backup-{dbname}-{timestamp}.{ext}.bz2
-  if filename =~ /backup-(.+)-\d{14}\.(sql|rdb)(\.bz2)?$/
+  if filename =~ /backup-(.+)-\d{14}\.(sql|rdb|snapshot)(\.bz2)?$/
     $1
   else
     nil
@@ -240,8 +330,8 @@ def cleanup_old_backups(dir)
   return unless File.directory?(backup_subdir)
 
   # Group backup files by database name
-  all_files = Dir.glob(File.join(backup_subdir, 'backup-*.{sql,rdb}.bz2')) +
-              Dir.glob(File.join(backup_subdir, 'backup-*.{sql,rdb}'))
+  all_files = Dir.glob(File.join(backup_subdir, 'backup-*.{sql,rdb,snapshot}.bz2')) +
+              Dir.glob(File.join(backup_subdir, 'backup-*.{sql,rdb,snapshot}'))
 
   files_by_db = all_files.group_by { |f| extract_dbname(File.basename(f)) }
                          .reject { |k, _| k.nil? }
