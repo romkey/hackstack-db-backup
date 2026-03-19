@@ -397,7 +397,7 @@ module BackupService
       end
 
       if all_pg_servers.any?
-        unique_servers = all_pg_servers.uniq { |s| "#{s[:host]}:#{s[:port]}:#{s[:user]}" }
+        unique_servers = all_pg_servers.uniq { |s| "#{s[:host]}:#{s[:port]}" }
         backup_subdir = File.join(config.dest_dir, "postgresql")
         FileUtils.mkdir_p(backup_subdir)
 
