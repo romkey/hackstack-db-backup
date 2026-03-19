@@ -1,10 +1,10 @@
-FROM alpine:3.19
+FROM alpine:3.23
 
 # Install only runtime dependencies - no build tools needed
 RUN apk add --no-cache \
     ruby \
     mariadb-client \
-    postgresql16-client \
+    postgresql18-client \
     sqlite \
     bzip2 \
     tzdata \
