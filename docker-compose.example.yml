@@ -5,7 +5,6 @@ services:
     container_name: dbbackup
     restart: unless-stopped
     volumes:
-      - ./app:/app
       - /opt:/opt:ro
       - backup_nfs:/dest
     networks:
