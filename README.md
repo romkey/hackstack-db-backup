@@ -145,6 +145,16 @@ Qdrant backups use the [snapshot API](https://qdrant.tech/documentation/concepts
 
 For authenticated Qdrant instances, include the API key before the host in the URL.
 
+#### PostgreSQL Global Objects
+
+When backing up PostgreSQL databases, db-backup automatically runs `pg_dumpall --globals-only` to capture roles, tablespaces, and other global objects needed for proper database restoration. These backups are stored in a `postgresql` subdirectory under `DEST_DIR`:
+
+```
+{DEST_DIR}/postgresql/backup-globals-{host}-{port}-{YYYYMMDDHHMMSS}.sql.bz2
+```
+
+This runs once per unique PostgreSQL server (host:port:user combination) after all database backups complete. If no PostgreSQL databases are configured, this step is skipped.
+
 ## Tiered Retention
 
 The backup system maintains backups across multiple time tiers to balance storage efficiency with recovery options:

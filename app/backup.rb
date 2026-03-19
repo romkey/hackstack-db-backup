@@ -136,6 +136,33 @@ module BackupService
       end
     end
 
+    def extract_pg_server_info(db_url)
+      if db_url =~ /^postgresql:\/\/([^:]*):([^@]*)@([^:]*):(\d+)\/(.*)$/
+        { user: $1, password: $2, host: $3, port: $4 }
+      else
+        nil
+      end
+    end
+
+    def build_pg_dumpall_command(server_info, backup_file)
+      env_prefix = "PGPASSWORD=#{Shellwords.escape(server_info[:password])}"
+      "#{env_prefix} pg_dumpall -h #{Shellwords.escape(server_info[:host])} -p #{Shellwords.escape(server_info[:port])} -U #{Shellwords.escape(server_info[:user])} --globals-only > #{Shellwords.escape(backup_file)} 2>&1"
+    end
+
+    def backup_pg_globals(server_info, backup_file)
+      command = build_pg_dumpall_command(server_info, backup_file)
+      output = `#{command}`
+      if $?.exitstatus != 0
+        error_message = "Error backing up PostgreSQL globals from #{server_info[:host]}:#{server_info[:port]}\nOutput: #{output}"
+        puts error_message unless config.quiet
+        post_to_slack(error_message)
+        return false
+      else
+        compress_file(backup_file)
+        return true
+      end
+    end
+
     def build_backup_command(db_url, backup_file)
       case db_url
       when /^postgresql:\/\/([^:]*):([^@]*)@([^:]*):(\d+)\/(.*)$/
@@ -232,10 +259,11 @@ module BackupService
 
     def process_directory(dir)
       env_file = File.join(dir, ".env")
-      return [] unless File.exist?(env_file)
+      return { pids: [], pg_servers: [] } unless File.exist?(env_file)
 
       db_urls = parse_database_urls(env_file)
       pids = []
+      pg_servers = []
 
       db_urls.each do |db_url|
         timestamp = Time.now.strftime("%Y%m%d%H%M%S")
@@ -244,6 +272,9 @@ module BackupService
 
         backup_filename = generate_backup_filename(db_url, timestamp)
         next unless backup_filename
+
+        pg_info = extract_pg_server_info(db_url)
+        pg_servers << pg_info if pg_info
 
         backup_file = File.join(backup_subdir, backup_filename)
         puts "Backing up database to #{backup_file}" unless config.quiet
@@ -255,7 +286,7 @@ module BackupService
         pids << pid
       end
 
-      pids
+      { pids: pids, pg_servers: pg_servers }
     end
 
     def parse_backup_timestamp(filename)
@@ -341,6 +372,7 @@ module BackupService
 
     def run_backup_cycle
       all_pids = []
+      all_pg_servers = []
       successful_backups = 0
       failed_backups = 0
 
@@ -349,8 +381,9 @@ module BackupService
 
         dir = File.join(config.parent_dir, entry)
         if File.directory?(dir)
-          pids = process_directory(dir)
-          all_pids.concat(pids)
+          result = process_directory(dir)
+          all_pids.concat(result[:pids])
+          all_pg_servers.concat(result[:pg_servers])
         end
       end
 
@@ -363,12 +396,33 @@ module BackupService
         end
       end
 
+      if all_pg_servers.any?
+        unique_servers = all_pg_servers.uniq { |s| "#{s[:host]}:#{s[:port]}:#{s[:user]}" }
+        backup_subdir = File.join(config.dest_dir, "postgresql")
+        FileUtils.mkdir_p(backup_subdir)
+
+        unique_servers.each do |server_info|
+          timestamp = Time.now.strftime("%Y%m%d%H%M%S")
+          server_id = "#{server_info[:host]}-#{server_info[:port]}"
+          backup_file = File.join(backup_subdir, "backup-globals-#{server_id}-#{timestamp}.sql")
+          puts "Backing up PostgreSQL globals from #{server_info[:host]}:#{server_info[:port]} to #{backup_file}" unless config.quiet
+
+          if backup_pg_globals(server_info, backup_file)
+            successful_backups += 1
+          else
+            failed_backups += 1
+          end
+        end
+      end
+
       Dir.foreach(config.parent_dir) do |entry|
         next if entry == '.' || entry == '..'
 
         dir = File.join(config.parent_dir, entry)
         cleanup_old_backups(dir) if File.directory?(dir)
       end
+
+      cleanup_old_backups(File.join(config.parent_dir, "postgresql")) if all_pg_servers.any?
 
       if successful_backups > 0 || failed_backups > 0
         summary = "Backup complete: #{successful_backups} succeeded, #{failed_backups} failed"

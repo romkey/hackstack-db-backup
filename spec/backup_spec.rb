@@ -158,6 +158,44 @@ RSpec.describe BackupService do
       end
     end
 
+    describe '#extract_pg_server_info' do
+      it 'extracts server info from PostgreSQL URL' do
+        url = 'postgresql://user:password@localhost:5432/mydb'
+        info = backup.extract_pg_server_info(url)
+
+        expect(info).to eq({ user: 'user', password: 'password', host: 'localhost', port: '5432' })
+      end
+
+      it 'returns nil for non-PostgreSQL URLs' do
+        url = 'mysql://user:pass@localhost:3306/mydb'
+        info = backup.extract_pg_server_info(url)
+
+        expect(info).to be_nil
+      end
+    end
+
+    describe '#build_pg_dumpall_command' do
+      it 'builds correct pg_dumpall command' do
+        server_info = { user: 'admin', password: 'secret', host: 'pghost', port: '5432' }
+        command = backup.build_pg_dumpall_command(server_info, '/backup/globals.sql')
+
+        expect(command).to include('PGPASSWORD=secret')
+        expect(command).to include('pg_dumpall')
+        expect(command).to include('-h pghost')
+        expect(command).to include('-p 5432')
+        expect(command).to include('-U admin')
+        expect(command).to include('--globals-only')
+        expect(command).to include('> /backup/globals.sql')
+      end
+
+      it 'escapes special characters in password' do
+        server_info = { user: 'admin', password: "p'ss$word", host: 'pghost', port: '5432' }
+        command = backup.build_pg_dumpall_command(server_info, '/backup/globals.sql')
+
+        expect(command).to include("PGPASSWORD=p\\'ss\\$word")
+      end
+    end
+
     describe '#generate_backup_filename' do
       let(:timestamp) { '20240115120000' }
 
