@@ -87,6 +87,7 @@ docker run -d \
 | `DEST_DIR` | Yes | - | Destination directory for backup files |
 | `BACKUP_INTERVAL_MINUTES` | No | 60 | Minutes between backup cycles |
 | `SLACK_WEBHOOK_URL` | No | - | Slack webhook URL for notifications |
+| `PG_GLOBALS_URL` | No | - | PostgreSQL superuser URL for pg_dumpall (see below) |
 | `BACKUP_RETAIN_HOURLY` | No | 6 | Number of hourly backups to retain |
 | `BACKUP_RETAIN_DAILY` | No | 6 | Number of daily backups to retain |
 | `BACKUP_RETAIN_WEEKLY` | No | 6 | Number of weekly backups to retain |
@@ -153,22 +154,25 @@ When backing up PostgreSQL databases, db-backup automatically runs `pg_dumpall -
 {DEST_DIR}/postgresql/backup-globals-{host}-{port}-{YYYYMMDDHHMMSS}.sql.bz2
 ```
 
-This runs once per unique PostgreSQL server (host:port combination) after all database backups complete. If no PostgreSQL databases are configured, this step is skipped.
+This runs once per unique PostgreSQL server after all database backups complete.
 
 **Superuser Required:** The `pg_dumpall --globals-only` command requires PostgreSQL superuser privileges to read role definitions from `pg_authid`. If the configured user lacks these privileges, the globals backup is silently skipped with a warning (individual database backups still proceed normally).
 
-To create a dedicated backup superuser:
+**Configuring the superuser account:**
+
+1. Create a dedicated backup superuser in PostgreSQL:
 
 ```sql
--- Connect to PostgreSQL as an existing superuser
 CREATE ROLE backup_admin WITH LOGIN PASSWORD 'your-secure-password' SUPERUSER;
 ```
 
-Then use this account in at least one of your `BACKUP_DATABASE_URLS`:
+2. Set the `PG_GLOBALS_URL` environment variable:
 
 ```bash
-BACKUP_DATABASE_URLS="postgresql://backup_admin:your-secure-password@postgres:5432/mydb"
+PG_GLOBALS_URL=postgresql://backup_admin:your-secure-password@postgres:5432/postgres
 ```
+
+If `PG_GLOBALS_URL` is not set, db-backup falls back to using credentials from the first PostgreSQL database URL found in your backup configuration (which typically won't have superuser privileges).
 
 If you cannot use a superuser account, the globals backup will be skipped but all database backups will continue to work normally.
 

@@ -9,12 +9,13 @@ module BackupService
   class Config
     attr_accessor :parent_dir, :dest_dir, :slack_webhook_url, :quiet,
                   :backup_interval_minutes, :retain_hourly, :retain_daily,
-                  :retain_weekly, :retain_monthly, :retain_yearly
+                  :retain_weekly, :retain_monthly, :retain_yearly, :pg_globals_url
 
     def initialize
       @parent_dir = ENV['PARENT_DIR']
       @dest_dir = ENV['DEST_DIR']
       @slack_webhook_url = ENV['SLACK_WEBHOOK_URL']
+      @pg_globals_url = ENV['PG_GLOBALS_URL']
       @quiet = false
       @backup_interval_minutes = (ENV['BACKUP_INTERVAL_MINUTES'] || '60').to_i
       @retain_hourly = (ENV['BACKUP_RETAIN_HOURLY'] || '6').to_i
@@ -403,12 +404,20 @@ module BackupService
         end
       end
 
-      if all_pg_servers.any?
-        unique_servers = all_pg_servers.uniq { |s| "#{s[:host]}:#{s[:port]}" }
+      pg_globals_servers = if config.pg_globals_url && !config.pg_globals_url.empty?
+        server_info = extract_pg_server_info(config.pg_globals_url)
+        server_info ? [server_info] : []
+      elsif all_pg_servers.any?
+        all_pg_servers.uniq { |s| "#{s[:host]}:#{s[:port]}" }
+      else
+        []
+      end
+
+      if pg_globals_servers.any?
         backup_subdir = File.join(config.dest_dir, "postgresql")
         FileUtils.mkdir_p(backup_subdir)
 
-        unique_servers.each do |server_info|
+        pg_globals_servers.each do |server_info|
           timestamp = Time.now.strftime("%Y%m%d%H%M%S")
           server_id = "#{server_info[:host]}-#{server_info[:port]}"
           backup_file = File.join(backup_subdir, "backup-globals-#{server_id}-#{timestamp}.sql")
@@ -433,7 +442,7 @@ module BackupService
         cleanup_old_backups(dir) if File.directory?(dir)
       end
 
-      cleanup_old_backups(File.join(config.parent_dir, "postgresql")) if all_pg_servers.any?
+      cleanup_old_backups(File.join(config.parent_dir, "postgresql")) if pg_globals_servers.any?
 
       if successful_backups > 0 || failed_backups > 0
         summary = "Backup complete: #{successful_backups} succeeded, #{failed_backups} failed"
