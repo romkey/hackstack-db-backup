@@ -196,6 +196,41 @@ RSpec.describe BackupService do
       end
     end
 
+    describe '#backup_pg_globals' do
+      let(:config) { create_test_config(quiet: true) }
+      let(:backup) { BackupService::Backup.new(config) }
+      let(:server_info) { { user: 'admin', password: 'secret', host: 'localhost', port: '5432' } }
+
+      it 'returns :skipped and deletes file on permission denied' do
+        Dir.mktmpdir do |dir|
+          backup_file = File.join(dir, 'globals.sql')
+
+          allow(backup).to receive(:`).and_return('pg_dumpall: error: permission denied for table pg_authid')
+          allow($?).to receive(:exitstatus).and_return(1)
+
+          result = backup.backup_pg_globals(server_info, backup_file)
+
+          expect(result).to eq(:skipped)
+          expect(File.exist?(backup_file)).to be false
+        end
+      end
+
+      it 'returns false on other errors' do
+        Dir.mktmpdir do |dir|
+          backup_file = File.join(dir, 'globals.sql')
+
+          allow(backup).to receive(:`).and_return('connection refused')
+          allow($?).to receive(:exitstatus).and_return(1)
+          allow(backup).to receive(:post_to_slack)
+
+          result = backup.backup_pg_globals(server_info, backup_file)
+
+          expect(result).to eq(false)
+          expect(backup).to have_received(:post_to_slack)
+        end
+      end
+    end
+
     describe '#generate_backup_filename' do
       let(:timestamp) { '20240115120000' }
 

@@ -153,7 +153,24 @@ When backing up PostgreSQL databases, db-backup automatically runs `pg_dumpall -
 {DEST_DIR}/postgresql/backup-globals-{host}-{port}-{YYYYMMDDHHMMSS}.sql.bz2
 ```
 
-This runs once per unique PostgreSQL server (host:port:user combination) after all database backups complete. If no PostgreSQL databases are configured, this step is skipped.
+This runs once per unique PostgreSQL server (host:port combination) after all database backups complete. If no PostgreSQL databases are configured, this step is skipped.
+
+**Superuser Required:** The `pg_dumpall --globals-only` command requires PostgreSQL superuser privileges to read role definitions from `pg_authid`. If the configured user lacks these privileges, the globals backup is silently skipped with a warning (individual database backups still proceed normally).
+
+To create a dedicated backup superuser:
+
+```sql
+-- Connect to PostgreSQL as an existing superuser
+CREATE ROLE backup_admin WITH LOGIN PASSWORD 'your-secure-password' SUPERUSER;
+```
+
+Then use this account in at least one of your `BACKUP_DATABASE_URLS`:
+
+```bash
+BACKUP_DATABASE_URLS="postgresql://backup_admin:your-secure-password@postgres:5432/mydb"
+```
+
+If you cannot use a superuser account, the globals backup will be skipped but all database backups will continue to work normally.
 
 ## Tiered Retention
 

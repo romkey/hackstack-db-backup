@@ -153,6 +153,13 @@ module BackupService
       command = build_pg_dumpall_command(server_info, backup_file)
       output = `#{command}`
       if $?.exitstatus != 0
+        File.delete(backup_file) if File.exist?(backup_file)
+
+        if output.include?('permission denied')
+          puts "Warning: Skipping PostgreSQL globals backup - insufficient privileges (requires superuser)" unless config.quiet
+          return :skipped
+        end
+
         error_message = "Error backing up PostgreSQL globals from #{server_info[:host]}:#{server_info[:port]}\nOutput: #{output}"
         puts error_message unless config.quiet
         post_to_slack(error_message)
@@ -407,8 +414,12 @@ module BackupService
           backup_file = File.join(backup_subdir, "backup-globals-#{server_id}-#{timestamp}.sql")
           puts "Backing up PostgreSQL globals from #{server_info[:host]}:#{server_info[:port]} to #{backup_file}" unless config.quiet
 
-          if backup_pg_globals(server_info, backup_file)
+          result = backup_pg_globals(server_info, backup_file)
+          case result
+          when true
             successful_backups += 1
+          when :skipped
+            # Permission denied - don't count as success or failure
           else
             failed_backups += 1
           end
