@@ -360,12 +360,21 @@ module BackupService
     end
 
     def distribute_backup_to_tiers(backup_file, app_subdir)
-      return unless File.exist?(backup_file)
+      puts "distribute_backup_to_tiers called with: #{backup_file}" unless config.quiet
+      
+      unless File.exist?(backup_file)
+        puts "  File does not exist!" unless config.quiet
+        return
+      end
 
       timestamp = parse_backup_timestamp(File.basename(backup_file))
-      return unless timestamp
+      unless timestamp
+        puts "  Could not parse timestamp from filename" unless config.quiet
+        return
+      end
 
       filename = File.basename(backup_file)
+      puts "  Distributing #{filename} to tier directories" unless config.quiet
 
       TIERS.each do |tier|
         tier_dir = File.join(app_subdir, tier.to_s)
@@ -382,11 +391,14 @@ module BackupService
         unless existing_for_key
           dest_file = File.join(tier_dir, filename)
           FileUtils.cp(backup_file, dest_file)
-          puts "Copied #{filename} to #{tier}/" unless config.quiet
+          puts "  Copied to #{tier}/" unless config.quiet
+        else
+          puts "  Skipping #{tier}/ - already have backup for this time bucket" unless config.quiet
         end
       end
 
       File.delete(backup_file)
+      puts "  Deleted original file" unless config.quiet
     end
 
     def cleanup_tier(tier_dir, tier, dbname = nil)
@@ -502,7 +514,9 @@ module BackupService
 
       processed_apps.each do |dir|
         app_subdir = File.join(config.dest_dir, File.basename(dir))
-        new_backups = Dir.glob(File.join(app_subdir, 'backup-*.{sql,snapshot}.bz2'))
+        glob_pattern = File.join(app_subdir, 'backup-*.{sql,snapshot}.bz2')
+        new_backups = Dir.glob(glob_pattern)
+        puts "Looking for backups in #{app_subdir}: found #{new_backups.size} files" unless config.quiet
         new_backups.each { |f| distribute_backup_to_tiers(f, app_subdir) }
       end
 
