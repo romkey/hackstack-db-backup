@@ -451,116 +451,75 @@ RSpec.describe BackupService do
       end
     end
 
-    describe '#categorize_backups' do
-      let(:config) do
-        create_test_config(
-          retain_hourly: 3,
-          retain_daily: 2,
-          retain_weekly: 2,
-          retain_monthly: 2,
-          retain_yearly: 2
-        )
+    describe '#tier_key_for_timestamp' do
+      it 'returns correct hourly key' do
+        timestamp = Time.new(2024, 1, 15, 14, 30, 22)
+        expect(backup.tier_key_for_timestamp(:hourly, timestamp)).to eq('2024-01-15-14')
       end
+
+      it 'returns correct daily key' do
+        timestamp = Time.new(2024, 1, 15, 14, 30, 22)
+        expect(backup.tier_key_for_timestamp(:daily, timestamp)).to eq('2024-01-15')
+      end
+
+      it 'returns correct weekly key' do
+        timestamp = Time.new(2024, 1, 15, 14, 30, 22)
+        expect(backup.tier_key_for_timestamp(:weekly, timestamp)).to eq('2024-03')
+      end
+
+      it 'returns correct monthly key' do
+        timestamp = Time.new(2024, 1, 15, 14, 30, 22)
+        expect(backup.tier_key_for_timestamp(:monthly, timestamp)).to eq('2024-01')
+      end
+
+      it 'returns correct yearly key' do
+        timestamp = Time.new(2024, 1, 15, 14, 30, 22)
+        expect(backup.tier_key_for_timestamp(:yearly, timestamp)).to eq('2024')
+      end
+    end
+
+    describe '#distribute_backup_to_tiers' do
+      include FakeFS::SpecHelpers
+
+      let(:config) { create_test_config(dest_dir: '/test/dest', quiet: true) }
       let(:backup) { BackupService::Backup.new(config) }
 
-      it 'categorizes backups into hourly buckets' do
-        files = [
-          '/backup/backup-db-20240115100000.sql.bz2',
-          '/backup/backup-db-20240115103000.sql.bz2',
-          '/backup/backup-db-20240115110000.sql.bz2',
-          '/backup/backup-db-20240115113000.sql.bz2',
-          '/backup/backup-db-20240115120000.sql.bz2'
-        ]
-
-        result = backup.categorize_backups(files)
-
-        expect(result[:hourly].size).to eq(3)
-        expect(result[:hourly]).to include('/backup/backup-db-20240115120000.sql.bz2')
-        expect(result[:hourly]).to include('/backup/backup-db-20240115113000.sql.bz2')
-        expect(result[:hourly]).to include('/backup/backup-db-20240115103000.sql.bz2')
+      before do
+        FileUtils.mkdir_p('/test/dest/myapp')
       end
 
-      it 'keeps newest backup per hour' do
-        files = [
-          '/backup/backup-db-20240115100000.sql.bz2',
-          '/backup/backup-db-20240115103000.sql.bz2'
-        ]
+      it 'copies backup to all tier directories' do
+        backup_file = '/test/dest/myapp/backup-db-20240115120000.sql.bz2'
+        File.write(backup_file, 'backup data')
 
-        result = backup.categorize_backups(files)
+        backup.distribute_backup_to_tiers(backup_file, '/test/dest/myapp')
 
-        expect(result[:hourly]).to include('/backup/backup-db-20240115103000.sql.bz2')
-        expect(result[:hourly]).not_to include('/backup/backup-db-20240115100000.sql.bz2')
+        BackupService::Backup::TIERS.each do |tier|
+          tier_file = "/test/dest/myapp/#{tier}/backup-db-20240115120000.sql.bz2"
+          expect(File.exist?(tier_file)).to be true
+        end
       end
 
-      it 'categorizes backups into daily buckets' do
-        files = [
-          '/backup/backup-db-20240113120000.sql.bz2',
-          '/backup/backup-db-20240114120000.sql.bz2',
-          '/backup/backup-db-20240115120000.sql.bz2'
-        ]
+      it 'deletes original file after distribution' do
+        backup_file = '/test/dest/myapp/backup-db-20240115120000.sql.bz2'
+        File.write(backup_file, 'backup data')
 
-        result = backup.categorize_backups(files)
+        backup.distribute_backup_to_tiers(backup_file, '/test/dest/myapp')
 
-        expect(result[:daily].size).to eq(2)
-        expect(result[:daily]).to include('/backup/backup-db-20240115120000.sql.bz2')
-        expect(result[:daily]).to include('/backup/backup-db-20240114120000.sql.bz2')
+        expect(File.exist?(backup_file)).to be false
       end
 
-      it 'categorizes backups into weekly buckets' do
-        files = [
-          '/backup/backup-db-20240101120000.sql.bz2',
-          '/backup/backup-db-20240108120000.sql.bz2',
-          '/backup/backup-db-20240115120000.sql.bz2'
-        ]
+      it 'does not overwrite existing file in tier' do
+        FileUtils.mkdir_p('/test/dest/myapp/hourly')
+        existing_file = '/test/dest/myapp/hourly/backup-db-20240115110000.sql.bz2'
+        File.write(existing_file, 'existing backup')
 
-        result = backup.categorize_backups(files)
+        backup_file = '/test/dest/myapp/backup-db-20240115120000.sql.bz2'
+        File.write(backup_file, 'new backup')
 
-        expect(result[:weekly].size).to eq(2)
-      end
+        backup.distribute_backup_to_tiers(backup_file, '/test/dest/myapp')
 
-      it 'categorizes backups into monthly buckets' do
-        files = [
-          '/backup/backup-db-20231115120000.sql.bz2',
-          '/backup/backup-db-20231215120000.sql.bz2',
-          '/backup/backup-db-20240115120000.sql.bz2'
-        ]
-
-        result = backup.categorize_backups(files)
-
-        expect(result[:monthly].size).to eq(2)
-      end
-
-      it 'categorizes backups into yearly buckets' do
-        files = [
-          '/backup/backup-db-20220115120000.sql.bz2',
-          '/backup/backup-db-20230115120000.sql.bz2',
-          '/backup/backup-db-20240115120000.sql.bz2'
-        ]
-
-        result = backup.categorize_backups(files)
-
-        expect(result[:yearly].size).to eq(2)
-      end
-
-      it 'handles empty file list' do
-        result = backup.categorize_backups([])
-
-        expect(result[:hourly]).to eq([])
-        expect(result[:daily]).to eq([])
-        expect(result[:weekly]).to eq([])
-        expect(result[:monthly]).to eq([])
-        expect(result[:yearly]).to eq([])
-      end
-
-      it 'ignores files with unparseable timestamps' do
-        files = [
-          '/backup/backup-db-20240115120000.sql.bz2',
-          '/backup/invalid-file.sql.bz2'
-        ]
-
-        result = backup.categorize_backups(files)
-
-        expect(result[:hourly]).to eq(['/backup/backup-db-20240115120000.sql.bz2'])
+        expect(File.read(existing_file)).to eq('existing backup')
       end
     end
 
@@ -581,42 +540,43 @@ RSpec.describe BackupService do
       let(:backup) { BackupService::Backup.new(config) }
 
       before do
-        FileUtils.mkdir_p('/test/dest/myapp')
+        FileUtils.mkdir_p('/test/dest/myapp/hourly')
+        FileUtils.mkdir_p('/test/dest/myapp/daily')
       end
 
-      it 'deletes files beyond retention limits' do
+      it 'deletes files beyond retention limits in tier directories' do
         files = [
-          '/test/dest/myapp/backup-db-20240115100000.sql.bz2',
-          '/test/dest/myapp/backup-db-20240115110000.sql.bz2',
-          '/test/dest/myapp/backup-db-20240115120000.sql.bz2',
-          '/test/dest/myapp/backup-db-20240115130000.sql.bz2'
+          '/test/dest/myapp/hourly/backup-db-20240115100000.sql.bz2',
+          '/test/dest/myapp/hourly/backup-db-20240115110000.sql.bz2',
+          '/test/dest/myapp/hourly/backup-db-20240115120000.sql.bz2',
+          '/test/dest/myapp/hourly/backup-db-20240115130000.sql.bz2'
         ]
         files.each { |f| FileUtils.touch(f) }
 
         backup.cleanup_old_backups('/test/parent/myapp')
 
-        expect(File.exist?('/test/dest/myapp/backup-db-20240115130000.sql.bz2')).to be true
-        expect(File.exist?('/test/dest/myapp/backup-db-20240115120000.sql.bz2')).to be true
+        expect(File.exist?('/test/dest/myapp/hourly/backup-db-20240115130000.sql.bz2')).to be true
+        expect(File.exist?('/test/dest/myapp/hourly/backup-db-20240115120000.sql.bz2')).to be true
       end
 
-      it 'groups files by database name' do
-        FileUtils.touch('/test/dest/myapp/backup-db1-20240115120000.sql.bz2')
-        FileUtils.touch('/test/dest/myapp/backup-db2-20240115120000.sql.bz2')
+      it 'cleans up each tier directory independently' do
+        FileUtils.touch('/test/dest/myapp/hourly/backup-db-20240115120000.sql.bz2')
+        FileUtils.touch('/test/dest/myapp/daily/backup-db-20240115120000.sql.bz2')
 
         backup.cleanup_old_backups('/test/parent/myapp')
 
-        expect(File.exist?('/test/dest/myapp/backup-db1-20240115120000.sql.bz2')).to be true
-        expect(File.exist?('/test/dest/myapp/backup-db2-20240115120000.sql.bz2')).to be true
+        expect(File.exist?('/test/dest/myapp/hourly/backup-db-20240115120000.sql.bz2')).to be true
+        expect(File.exist?('/test/dest/myapp/daily/backup-db-20240115120000.sql.bz2')).to be true
       end
 
-      it 'handles mixed file types' do
-        FileUtils.touch('/test/dest/myapp/backup-db-20240115120000.sql.bz2')
-        FileUtils.touch('/test/dest/myapp/backup-vectors-20240115120000.snapshot.bz2')
+      it 'handles mixed file types in tier directories' do
+        FileUtils.touch('/test/dest/myapp/hourly/backup-db-20240115120000.sql.bz2')
+        FileUtils.touch('/test/dest/myapp/hourly/backup-vectors-20240115120000.snapshot.bz2')
 
         backup.cleanup_old_backups('/test/parent/myapp')
 
-        expect(File.exist?('/test/dest/myapp/backup-db-20240115120000.sql.bz2')).to be true
-        expect(File.exist?('/test/dest/myapp/backup-vectors-20240115120000.snapshot.bz2')).to be true
+        expect(File.exist?('/test/dest/myapp/hourly/backup-db-20240115120000.sql.bz2')).to be true
+        expect(File.exist?('/test/dest/myapp/hourly/backup-vectors-20240115120000.snapshot.bz2')).to be true
       end
 
       it 'does nothing when backup directory does not exist' do

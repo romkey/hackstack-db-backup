@@ -193,14 +193,25 @@ Each tier defaults to 6 backups. With default settings, you maintain:
 - Monthly recovery points for half a year
 - Yearly recovery points for long-term archives
 
-Backups are deduplicated across tiers - a single backup file may satisfy multiple retention requirements.
+## Backup Directory Structure
 
-## Backup File Format
+Backups are organized into tier-specific subdirectories for clarity:
 
-Backup files are stored as:
 ```
-{DEST_DIR}/{app_name}/backup-{database_name}-{YYYYMMDDHHMMSS}.{sql|snapshot}.bz2
+{DEST_DIR}/{app_name}/
+├── hourly/
+│   └── backup-{database_name}-{YYYYMMDDHHMMSS}.{sql|snapshot}.bz2
+├── daily/
+│   └── ...
+├── weekly/
+│   └── ...
+├── monthly/
+│   └── ...
+└── yearly/
+    └── ...
 ```
+
+When a backup is created, it is copied to each tier directory where it qualifies as the representative backup for that time bucket. For example, a new backup might be copied to hourly/, daily/, and monthly/ if it's the newest backup for the current hour, day, and month.
 
 | Database | Extension |
 |----------|-----------|

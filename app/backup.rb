@@ -313,68 +313,126 @@ module BackupService
       end
     end
 
-    def categorize_backups(backup_files)
-      hourly = {}
-      daily = {}
-      weekly = {}
-      monthly = {}
-      yearly = {}
+    TIERS = [:hourly, :daily, :weekly, :monthly, :yearly].freeze
 
-      sorted_files = backup_files.map { |f| [f, parse_backup_timestamp(File.basename(f))] }
-                                 .reject { |_, ts| ts.nil? }
-                                 .sort_by { |_, ts| -ts.to_i }
+    def tier_key_for_timestamp(tier, timestamp)
+      case tier
+      when :hourly then timestamp.strftime("%Y-%m-%d-%H")
+      when :daily then timestamp.strftime("%Y-%m-%d")
+      when :weekly then timestamp.strftime("%G-%V")
+      when :monthly then timestamp.strftime("%Y-%m")
+      when :yearly then timestamp.strftime("%Y")
+      end
+    end
 
-      sorted_files.each do |file, timestamp|
-        hour_key = timestamp.strftime("%Y-%m-%d-%H")
-        day_key = timestamp.strftime("%Y-%m-%d")
-        week_key = timestamp.strftime("%G-%V")
-        month_key = timestamp.strftime("%Y-%m")
-        year_key = timestamp.strftime("%Y")
+    def tier_retention(tier)
+      case tier
+      when :hourly then config.retain_hourly
+      when :daily then config.retain_daily
+      when :weekly then config.retain_weekly
+      when :monthly then config.retain_monthly
+      when :yearly then config.retain_yearly
+      end
+    end
 
-        hourly[hour_key] ||= file
-        daily[day_key] ||= file
-        weekly[week_key] ||= file
-        monthly[month_key] ||= file
-        yearly[year_key] ||= file
+    def distribute_backup_to_tiers(backup_file, app_subdir)
+      return unless File.exist?(backup_file)
+
+      timestamp = parse_backup_timestamp(File.basename(backup_file))
+      return unless timestamp
+
+      filename = File.basename(backup_file)
+
+      TIERS.each do |tier|
+        tier_dir = File.join(app_subdir, tier.to_s)
+        FileUtils.mkdir_p(tier_dir)
+
+        existing_files = Dir.glob(File.join(tier_dir, 'backup-*.{sql,snapshot}.bz2'))
+        tier_key = tier_key_for_timestamp(tier, timestamp)
+
+        existing_for_key = existing_files.find do |f|
+          ts = parse_backup_timestamp(File.basename(f))
+          ts && tier_key_for_timestamp(tier, ts) == tier_key
+        end
+
+        unless existing_for_key
+          dest_file = File.join(tier_dir, filename)
+          FileUtils.cp(backup_file, dest_file)
+          puts "Copied #{filename} to #{tier}/" unless config.quiet
+        end
       end
 
-      {
-        hourly: hourly.values.take(config.retain_hourly),
-        daily: daily.values.take(config.retain_daily),
-        weekly: weekly.values.take(config.retain_weekly),
-        monthly: monthly.values.take(config.retain_monthly),
-        yearly: yearly.values.take(config.retain_yearly)
-      }
+      File.delete(backup_file)
+    end
+
+    def cleanup_tier(tier_dir, tier, dbname = nil)
+      pattern = dbname ? "backup-#{dbname}-*.{sql,snapshot}.bz2" : "backup-*.{sql,snapshot}.bz2"
+      files = Dir.glob(File.join(tier_dir, pattern))
+      return if files.empty?
+
+      files_by_db = files.group_by { |f| extract_dbname(File.basename(f)) }
+                         .reject { |k, _| k.nil? }
+
+      files_by_db.each do |db, db_files|
+        buckets = {}
+        db_files.each do |file|
+          ts = parse_backup_timestamp(File.basename(file))
+          next unless ts
+          key = tier_key_for_timestamp(tier, ts)
+          buckets[key] ||= []
+          buckets[key] << [file, ts]
+        end
+
+        buckets.each do |_key, bucket_files|
+          sorted = bucket_files.sort_by { |_, ts| -ts.to_i }
+          sorted[1..-1]&.each do |file, _|
+            File.delete(file)
+            puts "Deleted duplicate in #{tier}: #{file}" unless config.quiet
+          end
+        end
+
+        tier_sym = tier.to_s.to_sym
+        retention = tier_retention(tier_sym)
+        remaining_files = Dir.glob(File.join(tier_dir, "backup-#{db}-*.{sql,snapshot}.bz2"))
+        sorted_remaining = remaining_files.map { |f| [f, parse_backup_timestamp(File.basename(f))] }
+                                          .reject { |_, ts| ts.nil? }
+                                          .sort_by { |_, ts| -ts.to_i }
+
+        keys_seen = {}
+        sorted_remaining.each do |file, ts|
+          key = tier_key_for_timestamp(tier_sym, ts)
+          if keys_seen[key] || keys_seen.size >= retention
+            File.delete(file) unless keys_seen[key]
+            puts "Deleted old #{tier} backup: #{file}" unless config.quiet unless keys_seen[key]
+          else
+            keys_seen[key] = true
+          end
+        end
+      end
     end
 
     def cleanup_old_backups(dir)
       backup_subdir = File.join(config.dest_dir, File.basename(dir))
       return unless File.directory?(backup_subdir)
 
-      all_files = Dir.glob(File.join(backup_subdir, 'backup-*.{sql,snapshot}.bz2')) +
-                  Dir.glob(File.join(backup_subdir, 'backup-*.{sql,snapshot}'))
+      TIERS.each do |tier|
+        tier_dir = File.join(backup_subdir, tier.to_s)
+        next unless File.directory?(tier_dir)
+        cleanup_tier(tier_dir, tier)
+      end
 
-      files_by_db = all_files.group_by { |f| extract_dbname(File.basename(f)) }
-                             .reject { |k, _| k.nil? }
+      retained_counts = {}
+      TIERS.each do |tier|
+        tier_dir = File.join(backup_subdir, tier.to_s)
+        count = Dir.glob(File.join(tier_dir, 'backup-*.{sql,snapshot}.bz2')).size rescue 0
+        retained_counts[tier] = count
+      end
 
-      files_by_db.each do |dbname, files|
-        retained = categorize_backups(files)
-
-        files_to_keep = (retained[:hourly] + retained[:daily] + retained[:weekly] +
-                         retained[:monthly] + retained[:yearly]).uniq
-
-        files.each do |file|
-          unless files_to_keep.include?(file)
-            File.delete(file)
-            puts "Deleted old backup file: #{file}" unless config.quiet
-          end
-        end
-
-        unless config.quiet
-          puts "Retention for #{dbname}: #{retained[:hourly].size} hourly, " \
-               "#{retained[:daily].size} daily, #{retained[:weekly].size} weekly, " \
-               "#{retained[:monthly].size} monthly, #{retained[:yearly].size} yearly"
-        end
+      unless config.quiet
+        puts "Retention for #{File.basename(dir)}: " \
+             "#{retained_counts[:hourly]} hourly, #{retained_counts[:daily]} daily, " \
+             "#{retained_counts[:weekly]} weekly, #{retained_counts[:monthly]} monthly, " \
+             "#{retained_counts[:yearly]} yearly"
       end
     end
 
@@ -404,6 +462,17 @@ module BackupService
         end
       end
 
+      Dir.foreach(config.parent_dir) do |entry|
+        next if entry == '.' || entry == '..'
+
+        dir = File.join(config.parent_dir, entry)
+        if File.directory?(dir)
+          app_subdir = File.join(config.dest_dir, File.basename(dir))
+          new_backups = Dir.glob(File.join(app_subdir, 'backup-*.{sql,snapshot}.bz2'))
+          new_backups.each { |f| distribute_backup_to_tiers(f, app_subdir) }
+        end
+      end
+
       pg_globals_servers = if config.pg_globals_url && !config.pg_globals_url.empty?
         server_info = extract_pg_server_info(config.pg_globals_url)
         server_info ? [server_info] : []
@@ -427,6 +496,8 @@ module BackupService
           case result
           when true
             successful_backups += 1
+            compressed_file = "#{backup_file}.bz2"
+            distribute_backup_to_tiers(compressed_file, backup_subdir) if File.exist?(compressed_file)
           when :skipped
             # Permission denied - don't count as success or failure
           else
