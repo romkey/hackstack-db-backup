@@ -4,6 +4,7 @@ services:
     hostname: dbbackup
     container_name: dbbackup
     restart: unless-stopped
+    user: "${BACKUP_UID:-0}:${BACKUP_GID:-0}"
     volumes:
       - /opt:/opt:ro
       - backup_nfs:/dest
