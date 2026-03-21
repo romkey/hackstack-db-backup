@@ -94,6 +94,7 @@ docker run -d \
 | `BACKUP_RETAIN_WEEKLY` | No | 6 | Number of weekly backups to retain |
 | `BACKUP_RETAIN_MONTHLY` | No | 6 | Number of monthly backups to retain |
 | `BACKUP_RETAIN_YEARLY` | No | 6 | Number of yearly backups to retain |
+| `DEBUG` | No | - | Set to `1` for verbose debug logging |
 
 ### Source Directory Scanning
 
@@ -229,6 +230,25 @@ Backups are organized into tier-specific subdirectories for clarity:
 
 When a backup is created, it is copied to each tier directory where it qualifies as the representative backup for that time bucket. For example, a new backup might be copied to hourly/, daily/, and monthly/ if it's the newest backup for the current hour, day, and month.
 
+### How Time Buckets Work
+
+Each tier uses a different time granularity to determine which "bucket" a backup belongs to:
+
+| Tier | Bucket Key Format | Example |
+|------|-------------------|---------|
+| hourly | YYYY-MM-DD-HH | 2024-01-15-14 (2pm on Jan 15) |
+| daily | YYYY-MM-DD | 2024-01-15 |
+| weekly | YYYY-WW (ISO week) | 2024-03 (week 3 of 2024) |
+| monthly | YYYY-MM | 2024-01 |
+| yearly | YYYY | 2024 |
+
+When a new backup is created:
+1. Its timestamp is used to calculate the bucket key for each tier
+2. If no backup exists in a tier for that bucket, the new backup is copied there
+3. If a backup already exists for that bucket, the tier is skipped
+
+This means a single backup run can populate multiple tiers simultaneously (a backup at 2pm on January 15, 2024 would be the first backup for that hour, that day, possibly that week, etc.).
+
 | Database | Extension |
 |----------|-----------|
 | PostgreSQL | `.sql.bz2` |
@@ -293,6 +313,44 @@ bundle exec rspec --format documentation
 | `docker-compose.test.yml` | Compose file for running tests in Docker |
 | `Dockerfile` | Production container image |
 | `Dockerfile.test` | Test container image with dev dependencies |
+
+## Troubleshooting
+
+### Enable Debug Mode
+
+Set `DEBUG=1` in your environment for verbose logging that shows:
+- All directories being scanned for `.env` files
+- All `BACKUP_DATABASE_URLS` found (passwords masked)
+- Backup file creation and compression
+- Tier distribution decisions (which buckets, why files are copied or skipped)
+- Glob patterns used to find backup files
+
+```bash
+DEBUG=1
+```
+
+### Backups Not Appearing in Tier Directories
+
+If backups are created but not appearing in hourly/, daily/, etc. directories:
+
+1. **Enable debug mode** to see the distribution process
+2. **Check the glob pattern match**: Debug output shows the exact pattern used
+3. **Verify file exists before distribution**: The backup must complete before distribution runs
+4. **Check filename format**: Must match `backup-{name}-{YYYYMMDDHHMMSS}.{sql|snapshot}.bz2`
+
+### SQLite Permission Denied
+
+If SQLite backups fail with permission errors:
+
+1. Set `BACKUP_UID` and `BACKUP_GID` to match the file owner
+2. Or run as root with `BACKUP_UID=0` and `BACKUP_GID=0` (default)
+
+### PostgreSQL Globals Not Backing Up
+
+The `pg_dumpall --globals-only` command requires superuser privileges. Either:
+
+1. Set `PG_GLOBALS_URL` to a superuser connection string
+2. Or accept that globals backup will be skipped (database backups still work)
 
 ## License
 

@@ -7,7 +7,7 @@ require 'shellwords'
 
 module BackupService
   class Config
-    attr_accessor :parent_dir, :source_directories, :dest_dir, :slack_webhook_url, :quiet,
+    attr_accessor :parent_dir, :source_directories, :dest_dir, :slack_webhook_url, :quiet, :debug,
                   :backup_interval_minutes, :retain_hourly, :retain_daily,
                   :retain_weekly, :retain_monthly, :retain_yearly, :pg_globals_url
 
@@ -18,6 +18,7 @@ module BackupService
       @slack_webhook_url = ENV['SLACK_WEBHOOK_URL']
       @pg_globals_url = ENV['PG_GLOBALS_URL']
       @quiet = false
+      @debug = ENV['DEBUG'] == '1'
       @backup_interval_minutes = (ENV['BACKUP_INTERVAL_MINUTES'] || '60').to_i
       @retain_hourly = (ENV['BACKUP_RETAIN_HOURLY'] || '6').to_i
       @retain_daily = (ENV['BACKUP_RETAIN_DAILY'] || '6').to_i
@@ -50,6 +51,10 @@ module BackupService
 
     def initialize(config)
       @config = config
+    end
+
+    def debug(message)
+      puts "[DEBUG] #{message}" if config.debug
     end
 
     def post_to_slack(message)
@@ -291,9 +296,29 @@ module BackupService
 
     def process_directory(dir)
       env_file = File.join(dir, ".env")
-      return { pids: [], pg_servers: [] } unless File.exist?(env_file)
+      debug "=== Processing directory: #{dir} ==="
+      debug "Looking for .env file: #{env_file}"
+      
+      unless File.exist?(env_file)
+        debug "No .env file found, skipping directory"
+        return { pids: [], pg_servers: [] }
+      end
+      
+      debug ".env file found"
 
       db_urls = parse_database_urls(env_file)
+      debug "BACKUP_DATABASE_URLS found: #{db_urls.size} URL(s)"
+      db_urls.each_with_index do |url, i|
+        db_type = case url
+                  when /^postgresql:/ then "PostgreSQL"
+                  when /^mysql:/ then "MySQL"
+                  when /^sqlite:/ then "SQLite"
+                  when /^qdrant:/ then "Qdrant"
+                  else "Unknown"
+                  end
+        debug "  [#{i + 1}] #{db_type}: #{url.gsub(/:[^:@]+@/, ':****@')}"
+      end
+      
       pids = []
       pg_servers = []
 
@@ -303,7 +328,13 @@ module BackupService
         FileUtils.mkdir_p(backup_subdir)
 
         backup_filename = generate_backup_filename(db_url, timestamp)
-        next unless backup_filename
+        unless backup_filename
+          debug "Could not generate backup filename for URL, skipping"
+          next
+        end
+
+        debug "Generated backup filename: #{backup_filename}"
+        debug "Backup will be stored in: #{backup_subdir}"
 
         pg_info = extract_pg_server_info(db_url)
         pg_servers << pg_info if pg_info
@@ -316,8 +347,10 @@ module BackupService
           exit(success ? 0 : 1)
         end
         pids << pid
+        debug "Forked backup process with PID: #{pid}"
       end
 
+      debug "Total backup processes started: #{pids.size}"
       { pids: pids, pg_servers: pg_servers }
     end
 
@@ -360,44 +393,77 @@ module BackupService
     end
 
     def distribute_backup_to_tiers(backup_file, app_subdir)
-      puts "distribute_backup_to_tiers called with: #{backup_file}" unless config.quiet
+      debug "=== Distributing backup to tiers ==="
+      debug "Backup file: #{backup_file}"
+      debug "App subdirectory: #{app_subdir}"
       
       unless File.exist?(backup_file)
+        debug "ERROR: File does not exist!"
         puts "  File does not exist!" unless config.quiet
         return
       end
+      
+      debug "File exists, size: #{File.size(backup_file)} bytes"
 
       timestamp = parse_backup_timestamp(File.basename(backup_file))
       unless timestamp
+        debug "ERROR: Could not parse timestamp from filename: #{File.basename(backup_file)}"
         puts "  Could not parse timestamp from filename" unless config.quiet
         return
       end
+      
+      debug "Parsed timestamp: #{timestamp}"
 
       filename = File.basename(backup_file)
       puts "  Distributing #{filename} to tier directories" unless config.quiet
+      
+      debug ""
+      debug "=== Tier Distribution Logic ==="
+      debug "Each tier keeps the newest backup for each time bucket."
+      debug "Time buckets:"
+      debug "  - hourly:  #{tier_key_for_timestamp(:hourly, timestamp)} (retaining #{config.retain_hourly} most recent hours)"
+      debug "  - daily:   #{tier_key_for_timestamp(:daily, timestamp)} (retaining #{config.retain_daily} most recent days)"
+      debug "  - weekly:  #{tier_key_for_timestamp(:weekly, timestamp)} (retaining #{config.retain_weekly} most recent weeks)"
+      debug "  - monthly: #{tier_key_for_timestamp(:monthly, timestamp)} (retaining #{config.retain_monthly} most recent months)"
+      debug "  - yearly:  #{tier_key_for_timestamp(:yearly, timestamp)} (retaining #{config.retain_yearly} most recent years)"
+      debug ""
 
       TIERS.each do |tier|
         tier_dir = File.join(app_subdir, tier.to_s)
+        debug "Processing tier: #{tier}"
+        debug "  Tier directory: #{tier_dir}"
         FileUtils.mkdir_p(tier_dir)
+        debug "  Directory created/exists: #{File.directory?(tier_dir)}"
 
-        existing_files = Dir.glob(File.join(tier_dir, 'backup-*.{sql,snapshot}.bz2'))
+        glob_pattern = File.join(tier_dir, 'backup-*.{sql,snapshot}.bz2')
+        debug "  Glob pattern: #{glob_pattern}"
+        existing_files = Dir.glob(glob_pattern)
+        debug "  Existing files in tier: #{existing_files.size}"
+        existing_files.each { |f| debug "    - #{File.basename(f)}" }
+        
         tier_key = tier_key_for_timestamp(tier, timestamp)
+        debug "  Current backup's tier key: #{tier_key}"
 
         existing_for_key = existing_files.find do |f|
           ts = parse_backup_timestamp(File.basename(f))
           ts && tier_key_for_timestamp(tier, ts) == tier_key
         end
 
-        unless existing_for_key
-          dest_file = File.join(tier_dir, filename)
-          FileUtils.cp(backup_file, dest_file)
-          puts "  Copied to #{tier}/" unless config.quiet
-        else
+        if existing_for_key
+          debug "  Found existing backup for this time bucket: #{File.basename(existing_for_key)}"
           puts "  Skipping #{tier}/ - already have backup for this time bucket" unless config.quiet
+        else
+          dest_file = File.join(tier_dir, filename)
+          debug "  No existing backup for this time bucket, copying to: #{dest_file}"
+          FileUtils.cp(backup_file, dest_file)
+          debug "  Copy successful: #{File.exist?(dest_file)}"
+          puts "  Copied to #{tier}/" unless config.quiet
         end
       end
 
+      debug "Deleting original backup file: #{backup_file}"
       File.delete(backup_file)
+      debug "Original file deleted"
       puts "  Deleted original file" unless config.quiet
     end
 
@@ -473,21 +539,49 @@ module BackupService
     end
 
     def collect_app_directories
+      debug "=== Collecting app directories ==="
+      debug "PARENT_DIR: #{config.parent_dir}"
+      debug "SOURCE_DIRECTORIES: #{config.source_directories.join(', ')}"
+      
       app_dirs = []
       config.source_directories.each do |src_dir|
         source_path = File.join(config.parent_dir, src_dir)
-        next unless File.directory?(source_path)
+        debug "Checking source path: #{source_path}"
+        
+        unless File.directory?(source_path)
+          debug "  Source path does not exist or is not a directory"
+          next
+        end
 
         Dir.foreach(source_path) do |entry|
           next if entry == '.' || entry == '..'
           app_path = File.join(source_path, entry)
-          app_dirs << app_path if File.directory?(app_path)
+          if File.directory?(app_path)
+            env_file = File.join(app_path, ".env")
+            has_env = File.exist?(env_file)
+            debug "  Found app directory: #{app_path} (has .env: #{has_env})"
+            app_dirs << app_path
+          end
         end
       end
+      
+      debug "Total app directories found: #{app_dirs.size}"
       app_dirs
     end
 
     def run_backup_cycle
+      debug "=============================================="
+      debug "=== Starting backup cycle ==="
+      debug "=============================================="
+      debug "DEST_DIR: #{config.dest_dir}"
+      debug "Retention settings:"
+      debug "  Hourly:  #{config.retain_hourly}"
+      debug "  Daily:   #{config.retain_daily}"
+      debug "  Weekly:  #{config.retain_weekly}"
+      debug "  Monthly: #{config.retain_monthly}"
+      debug "  Yearly:  #{config.retain_yearly}"
+      debug ""
+      
       all_pids = []
       all_pg_servers = []
       successful_backups = 0
@@ -500,11 +594,19 @@ module BackupService
         result = process_directory(dir)
         all_pids.concat(result[:pids])
         all_pg_servers.concat(result[:pg_servers])
-        processed_apps << dir if result[:pids].any?
+        if result[:pids].any?
+          processed_apps << dir
+          debug "Added to processed_apps: #{dir}"
+        end
       end
 
+      debug ""
+      debug "=== Waiting for backup processes to complete ==="
+      debug "Total PIDs to wait for: #{all_pids.size}"
+      
       all_pids.each do |pid|
         _pid, status = Process.wait2(pid)
+        debug "PID #{pid} exited with status: #{status.exitstatus}"
         if status.exitstatus == 0
           successful_backups += 1
         else
@@ -512,11 +614,32 @@ module BackupService
         end
       end
 
+      debug ""
+      debug "=== Distributing backups to tier directories ==="
+      debug "Processed apps to check: #{processed_apps.size}"
+      
       processed_apps.each do |dir|
         app_subdir = File.join(config.dest_dir, File.basename(dir))
+        debug "Checking for new backups in: #{app_subdir}"
         glob_pattern = File.join(app_subdir, 'backup-*.{sql,snapshot}.bz2')
+        debug "Glob pattern: #{glob_pattern}"
         new_backups = Dir.glob(glob_pattern)
+        debug "Files matching glob: #{new_backups.size}"
+        new_backups.each { |f| debug "  - #{f}" }
         puts "Looking for backups in #{app_subdir}: found #{new_backups.size} files" unless config.quiet
+        
+        if new_backups.empty?
+          debug "No backup files found to distribute!"
+          debug "Listing all files in #{app_subdir}:"
+          if File.directory?(app_subdir)
+            Dir.foreach(app_subdir) do |f|
+              debug "  #{f}" unless f == '.' || f == '..'
+            end
+          else
+            debug "  Directory does not exist!"
+          end
+        end
+        
         new_backups.each { |f| distribute_backup_to_tiers(f, app_subdir) }
       end
 
