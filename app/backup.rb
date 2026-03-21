@@ -7,12 +7,13 @@ require 'shellwords'
 
 module BackupService
   class Config
-    attr_accessor :parent_dir, :dest_dir, :slack_webhook_url, :quiet,
+    attr_accessor :parent_dir, :source_directories, :dest_dir, :slack_webhook_url, :quiet,
                   :backup_interval_minutes, :retain_hourly, :retain_daily,
                   :retain_weekly, :retain_monthly, :retain_yearly, :pg_globals_url
 
     def initialize
-      @parent_dir = ENV['PARENT_DIR']
+      @parent_dir = ENV['PARENT_DIR'] || '/opt'
+      @source_directories = parse_source_directories(ENV['SOURCE_DIRECTORIES'])
       @dest_dir = ENV['DEST_DIR']
       @slack_webhook_url = ENV['SLACK_WEBHOOK_URL']
       @pg_globals_url = ENV['PG_GLOBALS_URL']
@@ -25,11 +26,21 @@ module BackupService
       @retain_yearly = (ENV['BACKUP_RETAIN_YEARLY'] || '6').to_i
     end
 
+    def parse_source_directories(value)
+      return [] if value.nil? || value.empty?
+      value.split(',').map(&:strip).reject(&:empty?)
+    end
+
     def validate!
       errors = []
-      errors << "PARENT_DIR environment variable is not set" if @parent_dir.nil? || @parent_dir.empty?
+      errors << "SOURCE_DIRECTORIES environment variable is not set" if @source_directories.empty?
       errors << "DEST_DIR environment variable is not set" if @dest_dir.nil? || @dest_dir.empty?
-      errors << "PARENT_DIR does not exist: #{@parent_dir}" if @parent_dir && !@parent_dir.empty? && !File.directory?(@parent_dir)
+
+      @source_directories.each do |src_dir|
+        full_path = File.join(@parent_dir, src_dir)
+        errors << "Source directory does not exist: #{full_path}" unless File.directory?(full_path)
+      end
+
       errors
     end
   end
@@ -436,21 +447,35 @@ module BackupService
       end
     end
 
+    def collect_app_directories
+      app_dirs = []
+      config.source_directories.each do |src_dir|
+        source_path = File.join(config.parent_dir, src_dir)
+        next unless File.directory?(source_path)
+
+        Dir.foreach(source_path) do |entry|
+          next if entry == '.' || entry == '..'
+          app_path = File.join(source_path, entry)
+          app_dirs << app_path if File.directory?(app_path)
+        end
+      end
+      app_dirs
+    end
+
     def run_backup_cycle
       all_pids = []
       all_pg_servers = []
       successful_backups = 0
       failed_backups = 0
+      processed_apps = []
 
-      Dir.foreach(config.parent_dir) do |entry|
-        next if entry == '.' || entry == '..'
+      app_directories = collect_app_directories
 
-        dir = File.join(config.parent_dir, entry)
-        if File.directory?(dir)
-          result = process_directory(dir)
-          all_pids.concat(result[:pids])
-          all_pg_servers.concat(result[:pg_servers])
-        end
+      app_directories.each do |dir|
+        result = process_directory(dir)
+        all_pids.concat(result[:pids])
+        all_pg_servers.concat(result[:pg_servers])
+        processed_apps << dir if result[:pids].any?
       end
 
       all_pids.each do |pid|
@@ -462,15 +487,10 @@ module BackupService
         end
       end
 
-      Dir.foreach(config.parent_dir) do |entry|
-        next if entry == '.' || entry == '..'
-
-        dir = File.join(config.parent_dir, entry)
-        if File.directory?(dir)
-          app_subdir = File.join(config.dest_dir, File.basename(dir))
-          new_backups = Dir.glob(File.join(app_subdir, 'backup-*.{sql,snapshot}.bz2'))
-          new_backups.each { |f| distribute_backup_to_tiers(f, app_subdir) }
-        end
+      processed_apps.each do |dir|
+        app_subdir = File.join(config.dest_dir, File.basename(dir))
+        new_backups = Dir.glob(File.join(app_subdir, 'backup-*.{sql,snapshot}.bz2'))
+        new_backups.each { |f| distribute_backup_to_tiers(f, app_subdir) }
       end
 
       pg_globals_servers = if config.pg_globals_url && !config.pg_globals_url.empty?
@@ -506,11 +526,8 @@ module BackupService
         end
       end
 
-      Dir.foreach(config.parent_dir) do |entry|
-        next if entry == '.' || entry == '..'
-
-        dir = File.join(config.parent_dir, entry)
-        cleanup_old_backups(dir) if File.directory?(dir)
+      processed_apps.each do |dir|
+        cleanup_old_backups(dir)
       end
 
       cleanup_old_backups(File.join(config.parent_dir, "postgresql")) if pg_globals_servers.any?

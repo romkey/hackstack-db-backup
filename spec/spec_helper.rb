@@ -36,8 +36,10 @@ end
 def create_test_config(overrides = {})
   config = BackupService::Config.new
   config.parent_dir = overrides[:parent_dir] || '/test/parent'
+  config.source_directories = overrides[:source_directories] || ['apps']
   config.dest_dir = overrides[:dest_dir] || '/test/dest'
   config.slack_webhook_url = overrides[:slack_webhook_url]
+  config.pg_globals_url = overrides[:pg_globals_url]
   config.quiet = overrides.fetch(:quiet, true)
   config.backup_interval_minutes = overrides[:backup_interval_minutes] || 60
   config.retain_hourly = overrides[:retain_hourly] || 6

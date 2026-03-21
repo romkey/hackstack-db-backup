@@ -69,9 +69,9 @@ networks:
 
 ```bash
 docker run -d \
-  -v /opt/docker:/opt/docker:ro \
+  -v /opt:/opt:ro \
   -v /backups:/dest \
-  -e PARENT_DIR=/opt/docker \
+  -e SOURCE_DIRECTORIES=apps,docker \
   -e DEST_DIR=/dest \
   -e BACKUP_INTERVAL_MINUTES=60 \
   ghcr.io/romkey/hackstack-db-backup:latest
@@ -83,7 +83,8 @@ docker run -d \
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `PARENT_DIR` | Yes | - | Directory to scan for application subdirectories |
+| `SOURCE_DIRECTORIES` | Yes | - | Comma-separated list of directories to scan (under PARENT_DIR) |
+| `PARENT_DIR` | No | `/opt` | Base directory for SOURCE_DIRECTORIES |
 | `DEST_DIR` | Yes | - | Destination directory for backup files |
 | `BACKUP_INTERVAL_MINUTES` | No | 60 | Minutes between backup cycles |
 | `SLACK_WEBHOOK_URL` | No | - | Slack webhook URL for notifications |
@@ -93,6 +94,21 @@ docker run -d \
 | `BACKUP_RETAIN_WEEKLY` | No | 6 | Number of weekly backups to retain |
 | `BACKUP_RETAIN_MONTHLY` | No | 6 | Number of monthly backups to retain |
 | `BACKUP_RETAIN_YEARLY` | No | 6 | Number of yearly backups to retain |
+
+### Source Directory Scanning
+
+db-backup scans for application `.env` files in subdirectories of each source directory. For example:
+
+```bash
+SOURCE_DIRECTORIES=apps,experiments
+PARENT_DIR=/opt  # optional, defaults to /opt
+```
+
+This configuration scans:
+- `/opt/apps/*/.env`
+- `/opt/experiments/*/.env`
+
+Each subdirectory containing a `.env` file with `BACKUP_DATABASE_URLS` will have its databases backed up.
 
 ### NFS Volume Configuration
 

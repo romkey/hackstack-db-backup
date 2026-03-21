@@ -6,27 +6,18 @@ RSpec.describe BackupService do
 
   describe BackupService::Config do
     describe '#validate!' do
-      it 'returns error when PARENT_DIR is nil' do
+      it 'returns error when SOURCE_DIRECTORIES is empty' do
         config = BackupService::Config.new
-        config.parent_dir = nil
+        config.source_directories = []
         config.dest_dir = '/test/dest'
 
         errors = config.validate!
-        expect(errors).to include("PARENT_DIR environment variable is not set")
-      end
-
-      it 'returns error when PARENT_DIR is empty' do
-        config = BackupService::Config.new
-        config.parent_dir = ''
-        config.dest_dir = '/test/dest'
-
-        errors = config.validate!
-        expect(errors).to include("PARENT_DIR environment variable is not set")
+        expect(errors).to include("SOURCE_DIRECTORIES environment variable is not set")
       end
 
       it 'returns error when DEST_DIR is nil' do
         config = BackupService::Config.new
-        config.parent_dir = '/tmp'
+        config.source_directories = ['apps']
         config.dest_dir = nil
 
         errors = config.validate!
@@ -35,29 +26,55 @@ RSpec.describe BackupService do
 
       it 'returns error when DEST_DIR is empty' do
         config = BackupService::Config.new
-        config.parent_dir = '/tmp'
+        config.source_directories = ['apps']
         config.dest_dir = ''
 
         errors = config.validate!
         expect(errors).to include("DEST_DIR environment variable is not set")
       end
 
-      it 'returns error when PARENT_DIR does not exist' do
+      it 'returns error when source directory does not exist' do
         config = BackupService::Config.new
-        config.parent_dir = '/nonexistent/path'
+        config.parent_dir = '/opt'
+        config.source_directories = ['nonexistent']
         config.dest_dir = '/test/dest'
 
         errors = config.validate!
-        expect(errors).to include("PARENT_DIR does not exist: /nonexistent/path")
+        expect(errors).to include("Source directory does not exist: /opt/nonexistent")
       end
 
       it 'returns empty array when configuration is valid' do
         config = BackupService::Config.new
         config.parent_dir = '/tmp'
+        config.source_directories = ['.']
         config.dest_dir = '/tmp'
 
         errors = config.validate!
         expect(errors).to be_empty
+      end
+    end
+
+    describe '#parse_source_directories' do
+      let(:config) { BackupService::Config.new }
+
+      it 'parses comma-separated values' do
+        result = config.parse_source_directories('apps,experiments,local')
+        expect(result).to eq(['apps', 'experiments', 'local'])
+      end
+
+      it 'trims whitespace' do
+        result = config.parse_source_directories('apps, experiments , local')
+        expect(result).to eq(['apps', 'experiments', 'local'])
+      end
+
+      it 'returns empty array for nil' do
+        result = config.parse_source_directories(nil)
+        expect(result).to eq([])
+      end
+
+      it 'returns empty array for empty string' do
+        result = config.parse_source_directories('')
+        expect(result).to eq([])
       end
     end
   end
