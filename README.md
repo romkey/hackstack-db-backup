@@ -138,6 +138,17 @@ BACKUP_DATABASE_URLS="postgresql://user:pass@host:5432/dbname,mysql://user:pass@
 
 Multiple database URLs can be specified as a comma-separated list.
 
+### Supported Database URL Formats
+
+| Database | URL Format | Notes |
+|----------|------------|-------|
+| PostgreSQL | `postgresql://user:pass@host/dbname` | Port optional (default: 5432). Also accepts `postgres://` |
+| MySQL/MariaDB | `mysql://user:pass@host/dbname` | Port optional (default: 3306). Also accepts `mysql2://` |
+| SQLite | `sqlite:///path/to/database.db` | Absolute path required |
+| Qdrant | `qdrant://apikey@host:6333/collection` | API key optional |
+
+**Note**: If your password contains special characters like `@`, URL-encode them (e.g., `@` becomes `%40`).
+
 Example with all supported databases:
 ```bash
 BACKUP_DATABASE_URLS="postgresql://user:pass@postgres:5432/mydb,mysql://user:pass@mysql:3306/mydb,qdrant://api-key@qdrant:6333/embeddings"

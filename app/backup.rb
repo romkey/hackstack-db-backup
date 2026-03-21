@@ -154,8 +154,8 @@ module BackupService
     end
 
     def extract_pg_server_info(db_url)
-      if db_url =~ /^postgresql:\/\/([^:]*):([^@]*)@([^:]*):(\d+)\/(.*)$/
-        { user: $1, password: $2, host: $3, port: $4 }
+      if db_url =~ /^postgres(?:ql)?:\/\/([^:]*):([^@]*)@([^\/:]+)(?::(\d+))?\/(.*)$/
+        { user: $1, password: $2, host: $3, port: $4 || '5432' }
       else
         nil
       end
@@ -189,12 +189,12 @@ module BackupService
 
     def build_backup_command(db_url, backup_file)
       case db_url
-      when /^postgresql:\/\/([^:]*):([^@]*)@([^:]*):(\d+)\/(.*)$/
-        user, password, host, port, dbname = $1, $2, $3, $4, $5
+      when /^postgres(?:ql)?:\/\/([^:]*):([^@]*)@([^\/:]+)(?::(\d+))?\/(.*)$/
+        user, password, host, port, dbname = $1, $2, $3, ($4 || '5432'), $5
         env_prefix = "PGPASSWORD=#{Shellwords.escape(password)}"
         "#{env_prefix} pg_dump -h #{Shellwords.escape(host)} -p #{Shellwords.escape(port)} -U #{Shellwords.escape(user)} -d #{Shellwords.escape(dbname)} -F c -b -v -f #{Shellwords.escape(backup_file)} 2>&1"
-      when /^mysql:\/\/([^:]*):([^@]*)@([^:]*):(\d+)\/(.*)$/
-        user, password, host, port, dbname = $1, $2, $3, $4, $5
+      when /^mysql2?:\/\/([^:]*):([^@]*)@([^\/:]+)(?::(\d+))?\/(.*)$/
+        user, password, host, port, dbname = $1, $2, $3, ($4 || '3306'), $5
         "mysqldump -h #{Shellwords.escape(host)} -P #{Shellwords.escape(port)} -u #{Shellwords.escape(user)} -p#{Shellwords.escape(password)} #{Shellwords.escape(dbname)} > #{Shellwords.escape(backup_file)} 2>&1"
       when /^sqlite:\/\/(\/.*)$/
         db_path = $1
@@ -276,10 +276,10 @@ module BackupService
 
     def generate_backup_filename(db_url, timestamp)
       case db_url
-      when /^postgresql:\/\/([^:]*):([^@]*)@([^:]*):(\d+)\/(.*)$/
+      when /^postgres(?:ql)?:\/\/([^:]*):([^@]*)@([^\/:]+)(?::(\d+))?\/(.*)$/
         dbname = $5
         "backup-#{dbname}-#{timestamp}.sql"
-      when /^mysql:\/\/([^:]*):([^@]*)@([^:]*):(\d+)\/(.*)$/
+      when /^mysql2?:\/\/([^:]*):([^@]*)@([^\/:]+)(?::(\d+))?\/(.*)$/
         dbname = $5
         "backup-#{dbname}-#{timestamp}.sql"
       when /^sqlite:\/\/(\/.*)$/
@@ -310,8 +310,8 @@ module BackupService
       debug "BACKUP_DATABASE_URLS found: #{db_urls.size} URL(s)"
       db_urls.each_with_index do |url, i|
         db_type = case url
-                  when /^postgresql:/ then "PostgreSQL"
-                  when /^mysql:/ then "MySQL"
+                  when /^postgres(?:ql)?:/ then "PostgreSQL"
+                  when /^mysql2?:/ then "MySQL"
                   when /^sqlite:/ then "SQLite"
                   when /^qdrant:/ then "Qdrant"
                   else "Unknown"
