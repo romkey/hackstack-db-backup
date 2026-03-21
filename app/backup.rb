@@ -215,9 +215,22 @@ module BackupService
         return false
       end
 
+      if db_url =~ /^sqlite:\/\/(\/.*)$/
+        db_path = $1
+        unless File.exist?(db_path)
+          error_message = "SQLite database file not found: #{db_path}"
+          puts error_message unless config.quiet
+          post_to_slack(error_message)
+          return false
+        end
+      end
+
       output = `#{command}`
       if $?.exitstatus != 0
         error_message = "Error backing up database: #{db_url}\nOutput: #{output}"
+        if db_url =~ /^sqlite:\/\/(\/.*)$/
+          error_message += "\nDatabase path: #{$1}"
+        end
         puts error_message unless config.quiet
         post_to_slack(error_message)
         return false
