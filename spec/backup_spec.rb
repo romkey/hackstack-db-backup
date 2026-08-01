@@ -77,6 +77,101 @@ RSpec.describe BackupService do
         expect(result).to eq([])
       end
     end
+
+    describe 'encryption recipients' do
+      let(:config) do
+        config = BackupService::Config.new
+        config.parent_dir = '/tmp'
+        config.source_directories = ['.']
+        config.dest_dir = '/tmp'
+        config.encryption_recipients = []
+        config.encryption_recipients_file = nil
+        config
+      end
+
+      it 'is disabled when no recipients are configured' do
+        expect(config.encryption_enabled?).to be false
+        expect(config.validate!).to be_empty
+      end
+
+      it 'is enabled when a recipient is configured' do
+        config.encryption_recipients = [TEST_AGE_RECIPIENT]
+
+        expect(config.encryption_enabled?).to be true
+        expect(config.validate!).to be_empty
+      end
+
+      it 'parses a comma-separated recipient list' do
+        result = BackupService.parse_recipient_list("#{TEST_AGE_RECIPIENT}, #{TEST_AGE_RECIPIENT_2}")
+
+        expect(result).to eq([TEST_AGE_RECIPIENT, TEST_AGE_RECIPIENT_2])
+      end
+
+      it 'returns an empty recipient list for nil and blank values' do
+        expect(BackupService.parse_recipient_list(nil)).to eq([])
+        expect(BackupService.parse_recipient_list('   ')).to eq([])
+      end
+
+      it 'accepts SSH public keys as recipients' do
+        expect(BackupService.valid_age_recipient?('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@host')).to be true
+      end
+
+      it 'rejects a malformed recipient' do
+        config.encryption_recipients = ['not-a-key']
+
+        errors = config.validate!
+        expect(errors).to include(/Invalid age recipient/)
+      end
+
+      it 'rejects a recipient that is too short' do
+        expect(BackupService.valid_age_recipient?('age1short')).to be false
+      end
+
+      it 'rejects a recipient with trailing junk' do
+        expect(BackupService.valid_age_recipient?("#{TEST_AGE_RECIPIENT}extra")).to be false
+      end
+
+      it 'rejects an age identity used where a public key belongs' do
+        expect(BackupService.valid_age_recipient?('AGE-SECRET-KEY-1QQPQY')).to be false
+      end
+
+      context 'with a recipients file' do
+        include FakeFS::SpecHelpers
+
+        before { FileUtils.mkdir_p('/tmp') }
+
+        it 'merges recipients from the file' do
+          File.write('/tmp/recipients.txt', "# team keys\n#{TEST_AGE_RECIPIENT_2}\n\n")
+          config.encryption_recipients = [TEST_AGE_RECIPIENT]
+          config.encryption_recipients_file = '/tmp/recipients.txt'
+
+          expect(config.validate!).to be_empty
+          expect(config.encryption_recipients).to eq([TEST_AGE_RECIPIENT, TEST_AGE_RECIPIENT_2])
+        end
+
+        it 'deduplicates recipients present in both sources' do
+          File.write('/tmp/recipients.txt', "#{TEST_AGE_RECIPIENT}\n")
+          config.encryption_recipients = [TEST_AGE_RECIPIENT]
+          config.encryption_recipients_file = '/tmp/recipients.txt'
+
+          config.validate!
+          expect(config.encryption_recipients).to eq([TEST_AGE_RECIPIENT])
+        end
+
+        it 'returns an error when the file does not exist' do
+          config.encryption_recipients_file = '/tmp/missing.txt'
+
+          expect(config.validate!).to include(/does not exist/)
+        end
+
+        it 'returns an error when the file has no recipients' do
+          File.write('/tmp/empty.txt', "# only a comment\n")
+          config.encryption_recipients_file = '/tmp/empty.txt'
+
+          expect(config.validate!).to include(/contains no recipients/)
+        end
+      end
+    end
   end
 
   describe BackupService::Backup do
@@ -218,12 +313,20 @@ RSpec.describe BackupService do
       let(:backup) { BackupService::Backup.new(config) }
       let(:server_info) { { user: 'admin', password: 'secret', host: 'localhost', port: '5432' } }
 
+      # $? is thread-global and cannot be stubbed (Process::Status is frozen),
+      # so the fake backtick runs a real trivial command to set it.
+      def stub_backtick(backup, output, exit_status)
+        allow(backup).to receive(:`) do |_command|
+          system(exit_status.zero? ? 'true' : 'false')
+          output
+        end
+      end
+
       it 'returns :skipped and deletes file on permission denied' do
         Dir.mktmpdir do |dir|
           backup_file = File.join(dir, 'globals.sql')
 
-          allow(backup).to receive(:`).and_return('pg_dumpall: error: permission denied for table pg_authid')
-          allow($?).to receive(:exitstatus).and_return(1)
+          stub_backtick(backup, 'pg_dumpall: error: permission denied for table pg_authid', 1)
 
           result = backup.backup_pg_globals(server_info, backup_file)
 
@@ -236,14 +339,38 @@ RSpec.describe BackupService do
         Dir.mktmpdir do |dir|
           backup_file = File.join(dir, 'globals.sql')
 
-          allow(backup).to receive(:`).and_return('connection refused')
-          allow($?).to receive(:exitstatus).and_return(1)
+          stub_backtick(backup, 'connection refused', 1)
           allow(backup).to receive(:post_to_slack)
 
           result = backup.backup_pg_globals(server_info, backup_file)
 
           expect(result).to eq(false)
           expect(backup).to have_received(:post_to_slack)
+        end
+      end
+
+      it 'compresses and encrypts a successful globals dump' do
+        Dir.mktmpdir do |dir|
+          backup_file = File.join(dir, 'globals.sql')
+          File.write(backup_file, 'CREATE ROLE admin;')
+
+          stub_backtick(backup, '', 0)
+          allow(backup).to receive(:compress_and_encrypt_file).and_return(true)
+
+          expect(backup.backup_pg_globals(server_info, backup_file)).to be true
+          expect(backup).to have_received(:compress_and_encrypt_file).with(backup_file)
+        end
+      end
+
+      it 'reports failure when the globals dump cannot be encrypted' do
+        Dir.mktmpdir do |dir|
+          backup_file = File.join(dir, 'globals.sql')
+          File.write(backup_file, 'CREATE ROLE admin;')
+
+          stub_backtick(backup, '', 0)
+          allow(backup).to receive(:compress_and_encrypt_file).and_return(false)
+
+          expect(backup.backup_pg_globals(server_info, backup_file)).to be false
         end
       end
     end
@@ -343,6 +470,20 @@ RSpec.describe BackupService do
 
         expect(timestamp).to be_nil
       end
+
+      it 'parses timestamp from an encrypted backup' do
+        filename = 'backup-mydb-20240115143022.sql.bz2.age'
+        timestamp = backup.parse_backup_timestamp(filename)
+
+        expect(timestamp).to eq(Time.new(2024, 1, 15, 14, 30, 22))
+      end
+
+      it 'parses timestamp from an encrypted snapshot backup' do
+        filename = 'backup-embeddings-20240115143022.snapshot.bz2.age'
+        timestamp = backup.parse_backup_timestamp(filename)
+
+        expect(timestamp).to eq(Time.new(2024, 1, 15, 14, 30, 22))
+      end
     end
 
     describe '#extract_dbname' do
@@ -379,6 +520,275 @@ RSpec.describe BackupService do
         dbname = backup.extract_dbname(filename)
 
         expect(dbname).to be_nil
+      end
+
+      it 'extracts database name from an encrypted backup' do
+        filename = 'backup-mydb-20240115143022.sql.bz2.age'
+        dbname = backup.extract_dbname(filename)
+
+        expect(dbname).to eq('mydb')
+      end
+
+      it 'handles dashed database names in an encrypted backup' do
+        filename = 'backup-my-app-db-20240115143022.sql.bz2.age'
+        dbname = backup.extract_dbname(filename)
+
+        expect(dbname).to eq('my-app-db')
+      end
+    end
+
+    describe '#backup_glob' do
+      include FakeFS::SpecHelpers
+
+      let(:config) { create_test_config(dest_dir: '/test/dest') }
+      let(:backup) { BackupService::Backup.new(config) }
+
+      before do
+        FileUtils.mkdir_p('/test/dest/myapp')
+        File.write('/test/dest/myapp/backup-db-20240115120000.sql.bz2', 'plain')
+        File.write('/test/dest/myapp/backup-db-20240115130000.sql.bz2.age', 'encrypted')
+        File.write('/test/dest/myapp/backup-other-20240115140000.snapshot.bz2.age', 'encrypted')
+        File.write('/test/dest/myapp/backup-db-20240115150000.sql.bz2.part', 'partial')
+        File.write('/test/dest/myapp/notes.txt', 'unrelated')
+      end
+
+      it 'finds both encrypted and unencrypted backups' do
+        files = backup.backup_glob('/test/dest/myapp').map { |f| File.basename(f) }
+
+        expect(files).to contain_exactly(
+          'backup-db-20240115120000.sql.bz2',
+          'backup-db-20240115130000.sql.bz2.age',
+          'backup-other-20240115140000.snapshot.bz2.age'
+        )
+      end
+
+      it 'ignores partial files from an interrupted run' do
+        files = backup.backup_glob('/test/dest/myapp')
+
+        expect(files.none? { |f| f.end_with?('.part') }).to be true
+      end
+
+      it 'filters by database name' do
+        files = backup.backup_glob('/test/dest/myapp', 'db').map { |f| File.basename(f) }
+
+        expect(files).to contain_exactly(
+          'backup-db-20240115120000.sql.bz2',
+          'backup-db-20240115130000.sql.bz2.age'
+        )
+      end
+    end
+
+    describe '#cleanup_tier with mixed encrypted and plaintext backups' do
+      include FakeFS::SpecHelpers
+
+      let(:config) { create_test_config(dest_dir: '/test/dest', retain_hourly: 2) }
+      let(:backup) { BackupService::Backup.new(config) }
+      let(:tier_dir) { '/test/dest/myapp/hourly' }
+
+      before { FileUtils.mkdir_p(tier_dir) }
+
+      it 'keeps the encrypted copy when both exist for the same backup' do
+        plaintext = "#{tier_dir}/backup-db-20240115120000.sql.bz2"
+        encrypted = "#{plaintext}.age"
+        File.write(plaintext, 'plain')
+        File.write(encrypted, 'encrypted')
+
+        backup.cleanup_tier(tier_dir, :hourly)
+
+        expect(File.exist?(encrypted)).to be true
+        expect(File.exist?(plaintext)).to be false
+      end
+
+      it 'applies retention across encrypted and plaintext backups together' do
+        File.write("#{tier_dir}/backup-db-20240115100000.sql.bz2", 'oldest')
+        File.write("#{tier_dir}/backup-db-20240115110000.sql.bz2.age", 'middle')
+        File.write("#{tier_dir}/backup-db-20240115120000.sql.bz2.age", 'newest')
+
+        backup.cleanup_tier(tier_dir, :hourly)
+
+        expect(File.exist?("#{tier_dir}/backup-db-20240115120000.sql.bz2.age")).to be true
+        expect(File.exist?("#{tier_dir}/backup-db-20240115110000.sql.bz2.age")).to be true
+        expect(File.exist?("#{tier_dir}/backup-db-20240115100000.sql.bz2")).to be false
+      end
+    end
+
+    describe '#pipeline_stages' do
+      it 'compresses only when there are no recipients' do
+        stages = backup.pipeline_stages('/tmp/backup.sql', [])
+
+        expect(stages).to eq([['bzip2', '-c', '/tmp/backup.sql']])
+      end
+
+      it 'pipes through age for a single recipient' do
+        stages = backup.pipeline_stages('/tmp/backup.sql', [TEST_AGE_RECIPIENT])
+
+        expect(stages).to eq([
+          ['bzip2', '-c', '/tmp/backup.sql'],
+          ['age', '-r', TEST_AGE_RECIPIENT]
+        ])
+      end
+
+      it 'passes every recipient to age' do
+        stages = backup.pipeline_stages('/tmp/backup.sql', [TEST_AGE_RECIPIENT, TEST_AGE_RECIPIENT_2])
+
+        expect(stages.last).to eq([
+          'age', '-r', TEST_AGE_RECIPIENT, '-r', TEST_AGE_RECIPIENT_2
+        ])
+      end
+
+      it 'builds arguments as an array so filenames are never shell-interpreted' do
+        stages = backup.pipeline_stages('/tmp/back up; rm -rf /.sql', [TEST_AGE_RECIPIENT])
+
+        expect(stages.first).to eq(['bzip2', '-c', '/tmp/back up; rm -rf /.sql'])
+      end
+    end
+
+    describe '#compressed_backup_path' do
+      it 'appends .bz2 when encryption is disabled' do
+        config = create_test_config
+        backup = BackupService::Backup.new(config)
+
+        expect(backup.compressed_backup_path('/tmp/backup.sql')).to eq('/tmp/backup.sql.bz2')
+      end
+
+      it 'appends .bz2.age when encryption is enabled' do
+        config = create_test_config(encryption_recipients: [TEST_AGE_RECIPIENT])
+        backup = BackupService::Backup.new(config)
+
+        expect(backup.compressed_backup_path('/tmp/backup.sql')).to eq('/tmp/backup.sql.bz2.age')
+      end
+    end
+
+    describe '#compress_and_encrypt_file' do
+      around do |example|
+        Dir.mktmpdir { |dir| @tmpdir = dir; example.run }
+      end
+
+      let(:source) { File.join(@tmpdir, 'backup-db-20240115120000.sql') }
+
+      before { File.write(source, 'SELECT 1;' * 100) }
+
+      context 'without encryption' do
+        let(:config) { create_test_config(quiet: true) }
+        let(:backup) { BackupService::Backup.new(config) }
+
+        it 'compresses and removes the plaintext dump' do
+          expect(backup.compress_and_encrypt_file(source)).to be true
+
+          expect(File.exist?("#{source}.bz2")).to be true
+          expect(File.exist?(source)).to be false
+        end
+
+        it 'leaves no partial file behind' do
+          backup.compress_and_encrypt_file(source)
+
+          expect(Dir.glob(File.join(@tmpdir, '*.part'))).to be_empty
+        end
+      end
+
+      context 'when a pipeline stage fails' do
+        let(:config) { create_test_config(quiet: true) }
+        let(:backup) { BackupService::Backup.new(config) }
+
+        before do
+          allow(backup).to receive(:pipeline_stages).and_return([['false']])
+          allow(backup).to receive(:post_to_slack)
+        end
+
+        it 'returns false' do
+          expect(backup.compress_and_encrypt_file(source)).to be false
+        end
+
+        it 'removes the plaintext dump so it cannot linger unencrypted' do
+          backup.compress_and_encrypt_file(source)
+
+          expect(File.exist?(source)).to be false
+        end
+
+        it 'removes the partial output' do
+          backup.compress_and_encrypt_file(source)
+
+          expect(Dir.glob(File.join(@tmpdir, '*.part'))).to be_empty
+          expect(File.exist?("#{source}.bz2")).to be false
+        end
+
+        it 'reports the failure to Slack' do
+          backup.compress_and_encrypt_file(source)
+
+          expect(backup).to have_received(:post_to_slack).with(/Error compressing file/)
+        end
+      end
+
+      context 'when the encryption tool is missing' do
+        let(:config) { create_test_config(quiet: true, encryption_recipients: [TEST_AGE_RECIPIENT]) }
+        let(:backup) { BackupService::Backup.new(config) }
+
+        before do
+          allow(backup).to receive(:pipeline_stages).and_return([['bzip2', '-c', source], ['definitely-not-a-real-binary']])
+          allow(backup).to receive(:post_to_slack)
+        end
+
+        it 'fails closed rather than writing an unencrypted backup' do
+          expect(backup.compress_and_encrypt_file(source)).to be false
+
+          expect(File.exist?(source)).to be false
+          expect(File.exist?("#{source}.bz2")).to be false
+          expect(File.exist?("#{source}.bz2.age")).to be false
+          expect(Dir.glob(File.join(@tmpdir, '*.part'))).to be_empty
+        end
+      end
+
+      context 'when the output is not a valid age file' do
+        let(:config) { create_test_config(quiet: true, encryption_recipients: [TEST_AGE_RECIPIENT]) }
+        let(:backup) { BackupService::Backup.new(config) }
+
+        before do
+          # cat succeeds but produces bzip2 output rather than an age file
+          allow(backup).to receive(:pipeline_stages).and_return([['bzip2', '-c', source], ['cat']])
+          allow(backup).to receive(:post_to_slack)
+        end
+
+        it 'rejects the result' do
+          expect(backup.compress_and_encrypt_file(source)).to be false
+          expect(File.exist?("#{source}.bz2.age")).to be false
+        end
+
+        it 'explains why in the error' do
+          backup.compress_and_encrypt_file(source)
+
+          expect(backup).to have_received(:post_to_slack).with(/not a valid age file/)
+        end
+      end
+    end
+
+    describe '.age_file?' do
+      around do |example|
+        Dir.mktmpdir { |dir| @tmpdir = dir; example.run }
+      end
+
+      it 'recognises an age file by its version header' do
+        path = File.join(@tmpdir, 'encrypted')
+        File.write(path, "age-encryption.org/v1\n-> X25519 abc\n")
+
+        expect(BackupService.age_file?(path)).to be true
+      end
+
+      it 'rejects a file with other contents' do
+        path = File.join(@tmpdir, 'plain')
+        File.write(path, 'BZh91AY&SY')
+
+        expect(BackupService.age_file?(path)).to be false
+      end
+
+      it 'rejects an empty file' do
+        path = File.join(@tmpdir, 'empty')
+        File.write(path, '')
+
+        expect(BackupService.age_file?(path)).to be false
+      end
+
+      it 'rejects a missing file' do
+        expect(BackupService.age_file?(File.join(@tmpdir, 'nope'))).to be false
       end
     end
 
@@ -781,20 +1191,20 @@ RSpec.describe BackupService do
       let(:backup) { BackupService::Backup.new(config) }
 
       context 'with Qdrant URL' do
-        it 'calls backup_qdrant and compress_file on success' do
+        it 'calls backup_qdrant and compress_and_encrypt_file on success' do
           allow(backup).to receive(:backup_qdrant).and_return(true)
-          allow(backup).to receive(:compress_file).and_return(true)
+          allow(backup).to receive(:compress_and_encrypt_file).and_return(true)
 
           result = backup.backup_database('qdrant://localhost:6333/collection', '/tmp/backup.snapshot')
 
           expect(result).to be true
           expect(backup).to have_received(:backup_qdrant).with('localhost', '6333', 'collection', nil, '/tmp/backup.snapshot')
-          expect(backup).to have_received(:compress_file).with('/tmp/backup.snapshot')
+          expect(backup).to have_received(:compress_and_encrypt_file).with('/tmp/backup.snapshot')
         end
 
         it 'extracts API key from URL' do
           allow(backup).to receive(:backup_qdrant).and_return(true)
-          allow(backup).to receive(:compress_file).and_return(true)
+          allow(backup).to receive(:compress_and_encrypt_file).and_return(true)
 
           backup.backup_database('qdrant://my-key@localhost:6333/collection', '/tmp/backup.snapshot')
 
@@ -803,12 +1213,21 @@ RSpec.describe BackupService do
 
         it 'does not compress on failure' do
           allow(backup).to receive(:backup_qdrant).and_return(false)
-          allow(backup).to receive(:compress_file)
+          allow(backup).to receive(:compress_and_encrypt_file)
 
           result = backup.backup_database('qdrant://localhost:6333/collection', '/tmp/backup.snapshot')
 
           expect(result).to be false
-          expect(backup).not_to have_received(:compress_file)
+          expect(backup).not_to have_received(:compress_and_encrypt_file)
+        end
+
+        it 'reports failure when encryption fails' do
+          allow(backup).to receive(:backup_qdrant).and_return(true)
+          allow(backup).to receive(:compress_and_encrypt_file).and_return(false)
+
+          result = backup.backup_database('qdrant://localhost:6333/collection', '/tmp/backup.snapshot')
+
+          expect(result).to be false
         end
       end
 

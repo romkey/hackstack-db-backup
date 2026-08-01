@@ -12,6 +12,17 @@ services:
       - backup-net
     env_file:
       - .env
+    # Optional age encryption. Uncomment to supply recipient PUBLIC keys via a
+    # secret instead of BACKUP_ENCRYPTION_RECIPIENTS in .env. The private key
+    # belongs offline, never on this host.
+    # environment:
+    #   BACKUP_ENCRYPTION_RECIPIENTS_FILE: /run/secrets/age-recipients
+    # secrets:
+    #   - age-recipients
+
+# secrets:
+#   age-recipients:
+#     file: ./age-recipients.txt
 
 volumes:
   backup_nfs:

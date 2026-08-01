@@ -9,6 +9,7 @@ A Ruby-based database backup utility designed for Docker-based multi-application
 - **Automatic discovery**: Scans directories for `.env` files with database URLs
 - **Parallel backups**: Uses forking for concurrent backup operations
 - **Compression**: Automatic bzip2 compression of backup files
+- **Optional encryption**: Public-key encryption at rest using [age](https://github.com/FiloSottile/age)
 - **Tiered retention**: Configurable retention for hourly, daily, weekly, monthly, and yearly backups
 - **Slack notifications**: Optional webhook notifications for backup status
 - **Docker-ready**: Alpine-based minimal container image
@@ -89,6 +90,8 @@ docker run -d \
 | `BACKUP_INTERVAL_MINUTES` | No | 60 | Minutes between backup cycles |
 | `SLACK_WEBHOOK_URL` | No | - | Slack webhook URL for notifications |
 | `PG_GLOBALS_URL` | No | - | PostgreSQL superuser URL for pg_dumpall (see below) |
+| `BACKUP_ENCRYPTION_RECIPIENTS` | No | - | Comma-separated age public keys. Setting this enables encryption (see below) |
+| `BACKUP_ENCRYPTION_RECIPIENTS_FILE` | No | - | Path to a file with one age public key per line |
 | `BACKUP_RETAIN_HOURLY` | No | 6 | Number of hourly backups to retain |
 | `BACKUP_RETAIN_DAILY` | No | 6 | Number of daily backups to retain |
 | `BACKUP_RETAIN_WEEKLY` | No | 6 | Number of weekly backups to retain |
@@ -204,6 +207,170 @@ If `PG_GLOBALS_URL` is not set, db-backup falls back to using credentials from t
 
 If you cannot use a superuser account, the globals backup will be skipped but all database backups will continue to work normally.
 
+## Encryption
+
+Backups can be encrypted at rest with [age](https://github.com/FiloSottile/age). Encryption is **optional and disabled by default** - without `BACKUP_ENCRYPTION_RECIPIENTS` or `BACKUP_ENCRYPTION_RECIPIENTS_FILE`, db-backup behaves exactly as before.
+
+Encryption is **asymmetric**. You configure db-backup with one or more *public keys* (recipients); the matching *private key* (identity) is never needed to make a backup and should never be stored on the backup server. Someone who compromises the backup host gets ciphertext and nothing else.
+
+Encrypted backups gain an `.age` suffix:
+
+```
+backup-mydb-20240115143022.sql.bz2.age
+```
+
+> **Warning:** the identity file is the only way to read these backups. If you lose it, every encrypted backup is permanently unrecoverable. Store it offline, and keep more than one copy.
+
+### 1. Generate a key pair
+
+Run this somewhere other than the backup server - your workstation, ideally:
+
+```bash
+docker run --rm -v "$PWD:/out" --entrypoint ruby \
+  ghcr.io/romkey/hackstack-db-backup:latest \
+  /app/backup-crypt.rb keygen -o /out/backup-identity.key
+```
+
+Or with age installed locally (`apk add age`, `brew install age`, `apt install age`):
+
+```bash
+age-keygen -o backup-identity.key
+```
+
+Either prints the public key:
+
+```
+Public key: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+```
+
+Move `backup-identity.key` somewhere safe and offline (password manager, hardware token, printed copy in a safe). Do not leave it on the machine running db-backup.
+
+### 2. Enable encryption
+
+Add the **public** key to the db-backup environment:
+
+```bash
+BACKUP_ENCRYPTION_RECIPIENTS=age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+```
+
+List several recipients (comma-separated) so more than one person can restore:
+
+```bash
+BACKUP_ENCRYPTION_RECIPIENTS=age1ql3z...,age1lggy...
+```
+
+For a longer list, or to use Docker secrets, point at a file with one recipient per line (`#` comments allowed):
+
+```yaml
+services:
+  dbbackup:
+    environment:
+      BACKUP_ENCRYPTION_RECIPIENTS_FILE: /run/secrets/age-recipients
+    secrets:
+      - age-recipients
+
+secrets:
+  age-recipients:
+    file: ./age-recipients.txt
+```
+
+Both variables can be used together; the lists are merged and deduplicated. SSH public keys (`ssh-ed25519 ...`, `ssh-rsa ...`) are also accepted as recipients.
+
+Recipients are validated at startup. A malformed key or an unreadable recipients file makes db-backup exit immediately rather than quietly producing backups you cannot decrypt.
+
+### 3. Verify before you rely on it
+
+Let one backup cycle run, then confirm you can actually read the result **before** encrypting your existing archive:
+
+```bash
+docker run --rm -v /backups:/dest -v "$PWD:/keys:ro" --entrypoint ruby \
+  ghcr.io/romkey/hackstack-db-backup:latest \
+  /app/backup-crypt.rb decrypt -i /keys/backup-identity.key --stdout \
+  /dest/myapp/hourly/backup-mydb-20240115143022.sql.bz2.age | bunzip2 -c | head
+```
+
+### Encrypting existing backups
+
+`backup-crypt.rb encrypt` walks a directory tree and replaces each unencrypted `.bz2` backup with an encrypted `.bz2.age` one. It skips files that are already encrypted, so it is safe to re-run.
+
+Always preview with `--dry-run` first:
+
+```bash
+docker run --rm -v /backups:/dest --entrypoint ruby \
+  ghcr.io/romkey/hackstack-db-backup:latest \
+  /app/backup-crypt.rb encrypt -r age1ql3z... --dry-run /dest
+```
+
+Then run it for real:
+
+```bash
+docker run --rm -v /backups:/dest --entrypoint ruby \
+  ghcr.io/romkey/hackstack-db-backup:latest \
+  /app/backup-crypt.rb encrypt -r age1ql3z... /dest
+```
+
+Each file is encrypted to a temporary `.part` file, verified, moved into place, and only then is the plaintext deleted. If age fails, the original is left untouched.
+
+With no path arguments, `encrypt` operates on `DEST_DIR`. With no `-r`/`-R`, it falls back to `BACKUP_ENCRYPTION_RECIPIENTS`.
+
+### Decrypting and restoring
+
+Decryption needs the identity file, so run it on a trusted machine.
+
+Decrypt in place (produces a `.bz2` next to the `.age` file):
+
+```bash
+ruby /app/backup-crypt.rb decrypt -i backup-identity.key \
+  /backups/myapp/daily/backup-mydb-20240115143022.sql.bz2.age
+```
+
+Or stream straight into a restore, without the plaintext ever touching disk:
+
+```bash
+# PostgreSQL (dumps are pg_dump custom format, so use pg_restore)
+ruby /app/backup-crypt.rb decrypt -i backup-identity.key --stdout \
+  backup-mydb-20240115143022.sql.bz2.age \
+  | bunzip2 -c | pg_restore -h postgres -U user -d mydb
+
+# MySQL/MariaDB
+ruby /app/backup-crypt.rb decrypt -i backup-identity.key --stdout \
+  backup-mydb-20240115143022.sql.bz2.age \
+  | bunzip2 -c | mysql -h mysql -u user -p mydb
+
+# SQLite
+ruby /app/backup-crypt.rb decrypt -i backup-identity.key --stdout \
+  backup-mydb-20240115143022.sql.bz2.age \
+  | bunzip2 -c | sqlite3 restored.db
+```
+
+Plain age works too, if you would rather not use the wrapper:
+
+```bash
+age -d -i backup-identity.key backup-mydb-20240115143022.sql.bz2.age | bunzip2 -c
+```
+
+### backup-crypt.rb reference
+
+```
+Usage: backup-crypt.rb <command> [options] [paths...]
+```
+
+| Command | Options | Description |
+|---------|---------|-------------|
+| `keygen` | `-o, --out PATH`<br>`-f, --force` | Generate an identity and print its public key. Writes the key with mode 0600 |
+| `encrypt` | `-r, --recipient KEY`<br>`-R, --recipients-file FILE`<br>`-n, --dry-run` | Encrypt `.bz2` backups in place. `-r` may be repeated |
+| `decrypt` | `-i, --identity FILE`<br>`-c, --stdout`<br>`-f, --force`<br>`-n, --dry-run` | Decrypt `.bz2.age` backups. `--identity` is required |
+
+Paths may be individual files or directories (searched recursively). If omitted, `DEST_DIR` is used.
+
+### Mixed archives
+
+Encrypted and unencrypted backups coexist safely. Tier distribution and retention recognise both `.bz2` and `.bz2.age`, so you can enable encryption and migrate the existing archive whenever convenient - retention keeps pruning correctly in the meantime.
+
+### Failure behaviour
+
+If encryption is configured but fails - age missing, an invalid recipient, a full disk - db-backup **fails the backup rather than falling back to writing plaintext**. The partial output and the plaintext dump are both deleted, the failure is logged, and it is reported to Slack if a webhook is configured. A missing backup is a much smaller problem than an unencrypted one you believed was encrypted, so watch for these failures.
+
 ## Tiered Retention
 
 The backup system maintains backups across multiple time tiers to balance storage efficiency with recovery options:
@@ -267,11 +434,15 @@ This means a single backup run can populate multiple tiers simultaneously (a bac
 | SQLite | `.sql.bz2` |
 | Qdrant | `.snapshot.bz2` |
 
+When encryption is enabled, each of these gains an `.age` suffix (for example `.sql.bz2.age`).
+
 ## Command Line Options
 
 | Option | Description |
 |--------|-------------|
 | `--quiet` | Suppress all output except errors |
+
+See [backup-crypt.rb reference](#backup-cryptrb-reference) for the encryption utility.
 
 ## Development
 
@@ -320,6 +491,8 @@ bundle exec rspec --format documentation
 
 | File | Description |
 |------|-------------|
+| `app/backup.rb` | Backup service |
+| `app/backup-crypt.rb` | Key generation, encryption, and decryption utility |
 | `docker-compose.example.yml` | Example production compose file with NFS storage |
 | `docker-compose.test.yml` | Compose file for running tests in Docker |
 | `Dockerfile` | Production container image |
@@ -345,9 +518,9 @@ DEBUG=1
 If backups are created but not appearing in hourly/, daily/, etc. directories:
 
 1. **Enable debug mode** to see the distribution process
-2. **Check the glob pattern match**: Debug output shows the exact pattern used
+2. **Check the glob pattern match**: Debug output shows the exact patterns used
 3. **Verify file exists before distribution**: The backup must complete before distribution runs
-4. **Check filename format**: Must match `backup-{name}-{YYYYMMDDHHMMSS}.{sql|snapshot}.bz2`
+4. **Check filename format**: Must match `backup-{name}-{YYYYMMDDHHMMSS}.{sql|snapshot}.bz2`, optionally followed by `.age`
 
 ### SQLite Permission Denied
 
@@ -362,6 +535,14 @@ The `pg_dumpall --globals-only` command requires superuser privileges. Either:
 
 1. Set `PG_GLOBALS_URL` to a superuser connection string
 2. Or accept that globals backup will be skipped (database backups still work)
+
+### Encryption Errors
+
+**"Invalid age recipient"** at startup: the key is malformed. An age public key starts with `age1` and is 62 characters long. Make sure you configured the *public* key, not the contents of the identity file.
+
+**"Error compressing/encrypting file"** during a cycle: the backup failed and nothing was written. Check that the image includes `age` (`docker run --rm --entrypoint age <image> --version`) and that `DEST_DIR` has free space. Backups do not silently fall back to plaintext.
+
+**"no identity matched any of the recipients"** when decrypting: the identity does not correspond to any recipient the file was encrypted to. Backups can only be read by the keys configured at the time they were made - re-check which recipients were set then.
 
 ## License
 

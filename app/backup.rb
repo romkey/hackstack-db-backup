@@ -4,12 +4,43 @@ require 'json'
 require 'time'
 require 'optparse'
 require 'shellwords'
+require 'open3'
 
 module BackupService
+  # An age recipient is either a native age public key (bech32, always 62
+  # characters) or an SSH public key, which may carry a trailing comment.
+  AGE_RECIPIENT_PATTERN = /\A(?:age1[0-9a-z]{58}\z|ssh-(?:ed25519|rsa)\s+\S+)/.freeze
+
+  # Every age file begins with this version line.
+  AGE_HEADER = 'age-encryption.org/v1'.freeze
+
+  def self.valid_age_recipient?(recipient)
+    !recipient.nil? && recipient.match?(AGE_RECIPIENT_PATTERN)
+  end
+
+  def self.parse_recipient_list(value)
+    return [] if value.nil? || value.strip.empty?
+    value.split(',').map(&:strip).reject(&:empty?)
+  end
+
+  def self.read_recipients_file(path)
+    File.readlines(path).map(&:strip).reject { |line| line.empty? || line.start_with?('#') }
+  end
+
+  # An age file is binary, but its first line is always the version header.
+  # Checking it catches a truncated or empty result being promoted to a backup.
+  def self.age_file?(path)
+    return false unless File.exist?(path) && File.size(path) > 0
+    File.open(path, 'rb') { |f| f.read(AGE_HEADER.bytesize) } == AGE_HEADER
+  rescue StandardError
+    false
+  end
+
   class Config
     attr_accessor :parent_dir, :source_directories, :dest_dir, :slack_webhook_url, :quiet, :debug,
                   :backup_interval_minutes, :retain_hourly, :retain_daily,
-                  :retain_weekly, :retain_monthly, :retain_yearly, :pg_globals_url
+                  :retain_weekly, :retain_monthly, :retain_yearly, :pg_globals_url,
+                  :encryption_recipients, :encryption_recipients_file
 
     def initialize
       @parent_dir = ENV['PARENT_DIR'] || '/opt'
@@ -17,6 +48,8 @@ module BackupService
       @dest_dir = ENV['DEST_DIR']
       @slack_webhook_url = ENV['SLACK_WEBHOOK_URL']
       @pg_globals_url = ENV['PG_GLOBALS_URL']
+      @encryption_recipients = BackupService.parse_recipient_list(ENV['BACKUP_ENCRYPTION_RECIPIENTS'])
+      @encryption_recipients_file = ENV['BACKUP_ENCRYPTION_RECIPIENTS_FILE']
       @quiet = false
       @debug = ENV['DEBUG'] == '1'
       @backup_interval_minutes = (ENV['BACKUP_INTERVAL_MINUTES'] || '60').to_i
@@ -32,6 +65,10 @@ module BackupService
       value.split(',').map(&:strip).reject(&:empty?)
     end
 
+    def encryption_enabled?
+      !@encryption_recipients.empty?
+    end
+
     def validate!
       errors = []
       errors << "SOURCE_DIRECTORIES environment variable is not set" if @source_directories.empty?
@@ -40,6 +77,35 @@ module BackupService
       @source_directories.each do |src_dir|
         full_path = File.join(@parent_dir, src_dir)
         errors << "Source directory does not exist: #{full_path}" unless File.directory?(full_path)
+      end
+
+      errors.concat(resolve_encryption_recipients!)
+
+      errors
+    end
+
+    # Merges BACKUP_ENCRYPTION_RECIPIENTS_FILE into the recipient list and checks
+    # every key up front, so a misconfigured deployment fails at startup rather
+    # than silently producing backups nobody can decrypt.
+    def resolve_encryption_recipients!
+      errors = []
+      path = @encryption_recipients_file
+
+      if path && !path.empty?
+        if !File.file?(path)
+          errors << "BACKUP_ENCRYPTION_RECIPIENTS_FILE does not exist: #{path}"
+        elsif !File.readable?(path)
+          errors << "BACKUP_ENCRYPTION_RECIPIENTS_FILE is not readable: #{path}"
+        else
+          from_file = BackupService.read_recipients_file(path)
+          errors << "BACKUP_ENCRYPTION_RECIPIENTS_FILE contains no recipients: #{path}" if from_file.empty?
+          @encryption_recipients = (@encryption_recipients + from_file).uniq
+        end
+      end
+
+      @encryption_recipients.each do |recipient|
+        next if BackupService.valid_age_recipient?(recipient)
+        errors << "Invalid age recipient (expected age1... or an SSH public key): #{recipient}"
       end
 
       errors
@@ -182,8 +248,7 @@ module BackupService
         post_to_slack(error_message)
         return false
       else
-        compress_file(backup_file)
-        return true
+        return compress_and_encrypt_file(backup_file)
       end
     end
 
@@ -207,9 +272,8 @@ module BackupService
     def backup_database(db_url, backup_file)
       if db_url =~ /^qdrant:\/\/(?:([^@]+)@)?([^:]+):(\d+)\/(.+)$/
         api_key, host, port, collection = $1, $2, $3, $4
-        success = backup_qdrant(host, port, collection, api_key, backup_file)
-        compress_file(backup_file) if success
-        return success
+        return false unless backup_qdrant(host, port, collection, api_key, backup_file)
+        return compress_and_encrypt_file(backup_file)
       end
 
       command = build_backup_command(db_url, backup_file)
@@ -240,20 +304,63 @@ module BackupService
         post_to_slack(error_message)
         return false
       else
-        compress_file(backup_file)
-        return true
+        return compress_and_encrypt_file(backup_file)
       end
     end
 
-    def compress_file(file)
-      compressed_file = "#{file}.bz2"
-      system("bzip2 -c #{Shellwords.escape(file)} > #{Shellwords.escape(compressed_file)}")
-      if $?.exitstatus == 0
-        File.delete(file)
-        puts "Compressed and deleted original backup file: #{file}" unless config.quiet
+    def compressed_backup_path(file)
+      config.encryption_enabled? ? "#{file}.bz2.age" : "#{file}.bz2"
+    end
+
+    def pipeline_stages(file, recipients)
+      stages = [['bzip2', '-c', file]]
+      stages << (['age'] + recipients.flat_map { |r| ['-r', r] }) unless recipients.empty?
+      stages
+    end
+
+    # Compresses, and when recipients are configured encrypts, in a single
+    # pipeline so the compressed plaintext never reaches disk. Fails closed:
+    # on any error the partial output and the plaintext dump are both removed
+    # rather than leaving an unencrypted backup behind.
+    def compress_and_encrypt_file(file)
+      recipients = config.encryption_recipients
+      encrypting = !recipients.empty?
+      output_file = encrypting ? "#{file}.bz2.age" : "#{file}.bz2"
+      temp_file = "#{output_file}.part"
+      failure = nil
+
+      succeeded = begin
+        statuses = Open3.pipeline(*pipeline_stages(file, recipients), out: temp_file)
+        failed = statuses.reject { |status| status.exitstatus == 0 }
+
+        if failed.any?
+          failure = "exit status #{failed.map(&:exitstatus).join(', ')}"
+          false
+        elsif !File.exist?(temp_file) || File.size(temp_file) == 0
+          failure = "output is empty"
+          false
+        elsif encrypting && !BackupService.age_file?(temp_file)
+          failure = "output is not a valid age file"
+          false
+        else
+          true
+        end
+      rescue StandardError => e
+        failure = e.message
+        false
+      end
+
+      if succeeded
+        File.rename(temp_file, output_file)
+        File.delete(file) if File.exist?(file)
+        action = encrypting ? "Compressed, encrypted" : "Compressed"
+        puts "#{action} and deleted original backup file: #{file}" unless config.quiet
         true
       else
-        error_message = "Error compressing file: #{file}"
+        File.delete(temp_file) if File.exist?(temp_file)
+        File.delete(file) if File.exist?(file)
+        action = encrypting ? "compressing/encrypting" : "compressing"
+        error_message = "Error #{action} file: #{file} (#{failure})"
         puts error_message unless config.quiet
         post_to_slack(error_message)
         false
@@ -355,7 +462,7 @@ module BackupService
     end
 
     def parse_backup_timestamp(filename)
-      if filename =~ /backup-.*-(\d{14})\.(sql|snapshot)(\.bz2)?$/
+      if filename =~ /backup-.*-(\d{14})\.(sql|snapshot)(\.bz2)?(\.age)?$/
         Time.strptime($1, "%Y%m%d%H%M%S")
       else
         nil
@@ -363,11 +470,24 @@ module BackupService
     end
 
     def extract_dbname(filename)
-      if filename =~ /backup-(.+)-\d{14}\.(sql|snapshot)(\.bz2)?$/
+      if filename =~ /backup-(.+)-\d{14}\.(sql|snapshot)(\.bz2)?(\.age)?$/
         $1
       else
         nil
       end
+    end
+
+    # Encrypted and unencrypted backups coexist during migration, so every
+    # lookup has to consider both suffixes.
+    BACKUP_SUFFIXES = ['bz2', 'bz2.age'].freeze
+
+    def backup_glob_patterns(dir, dbname = nil)
+      stem = dbname ? "backup-#{dbname}-*" : 'backup-*'
+      BACKUP_SUFFIXES.map { |suffix| File.join(dir, "#{stem}.{sql,snapshot}.#{suffix}") }
+    end
+
+    def backup_glob(dir, dbname = nil)
+      backup_glob_patterns(dir, dbname).flat_map { |pattern| Dir.glob(pattern) }
     end
 
     TIERS = [:hourly, :daily, :weekly, :monthly, :yearly].freeze
@@ -435,9 +555,8 @@ module BackupService
         FileUtils.mkdir_p(tier_dir)
         debug "  Directory created/exists: #{File.directory?(tier_dir)}"
 
-        glob_pattern = File.join(tier_dir, 'backup-*.{sql,snapshot}.bz2')
-        debug "  Glob pattern: #{glob_pattern}"
-        existing_files = Dir.glob(glob_pattern)
+        debug "  Glob patterns: #{backup_glob_patterns(tier_dir).join(', ')}"
+        existing_files = backup_glob(tier_dir)
         debug "  Existing files in tier: #{existing_files.size}"
         existing_files.each { |f| debug "    - #{File.basename(f)}" }
         
@@ -467,9 +586,14 @@ module BackupService
       puts "  Deleted original file" unless config.quiet
     end
 
+    # Newest first. When a plaintext and an encrypted copy of the same backup
+    # both exist, keep the encrypted one rather than deciding arbitrarily.
+    def retention_sort_key(file, timestamp)
+      [-timestamp.to_i, file.end_with?('.age') ? 0 : 1, file]
+    end
+
     def cleanup_tier(tier_dir, tier, dbname = nil)
-      pattern = dbname ? "backup-#{dbname}-*.{sql,snapshot}.bz2" : "backup-*.{sql,snapshot}.bz2"
-      files = Dir.glob(File.join(tier_dir, pattern))
+      files = backup_glob(tier_dir, dbname)
       return if files.empty?
 
       files_by_db = files.group_by { |f| extract_dbname(File.basename(f)) }
@@ -486,7 +610,7 @@ module BackupService
         end
 
         buckets.each do |_key, bucket_files|
-          sorted = bucket_files.sort_by { |_, ts| -ts.to_i }
+          sorted = bucket_files.sort_by { |file, ts| retention_sort_key(file, ts) }
           sorted[1..-1]&.each do |file, _|
             File.delete(file)
             puts "Deleted duplicate in #{tier}: #{file}" unless config.quiet
@@ -495,10 +619,10 @@ module BackupService
 
         tier_sym = tier.to_s.to_sym
         retention = tier_retention(tier_sym)
-        remaining_files = Dir.glob(File.join(tier_dir, "backup-#{db}-*.{sql,snapshot}.bz2"))
+        remaining_files = backup_glob(tier_dir, db)
         sorted_remaining = remaining_files.map { |f| [f, parse_backup_timestamp(File.basename(f))] }
                                           .reject { |_, ts| ts.nil? }
-                                          .sort_by { |_, ts| -ts.to_i }
+                                          .sort_by { |file, ts| retention_sort_key(file, ts) }
 
         keys_seen = {}
         sorted_remaining.each do |file, ts|
@@ -526,7 +650,7 @@ module BackupService
       retained_counts = {}
       TIERS.each do |tier|
         tier_dir = File.join(backup_subdir, tier.to_s)
-        count = Dir.glob(File.join(tier_dir, 'backup-*.{sql,snapshot}.bz2')).size rescue 0
+        count = backup_glob(tier_dir).size rescue 0
         retained_counts[tier] = count
       end
 
@@ -621,9 +745,8 @@ module BackupService
       processed_apps.each do |dir|
         app_subdir = File.join(config.dest_dir, File.basename(dir))
         debug "Checking for new backups in: #{app_subdir}"
-        glob_pattern = File.join(app_subdir, 'backup-*.{sql,snapshot}.bz2')
-        debug "Glob pattern: #{glob_pattern}"
-        new_backups = Dir.glob(glob_pattern)
+        debug "Glob patterns: #{backup_glob_patterns(app_subdir).join(', ')}"
+        new_backups = backup_glob(app_subdir)
         debug "Files matching glob: #{new_backups.size}"
         new_backups.each { |f| debug "  - #{f}" }
         puts "Looking for backups in #{app_subdir}: found #{new_backups.size} files" unless config.quiet
@@ -666,7 +789,7 @@ module BackupService
           case result
           when true
             successful_backups += 1
-            compressed_file = "#{backup_file}.bz2"
+            compressed_file = compressed_backup_path(backup_file)
             distribute_backup_to_tiers(compressed_file, backup_subdir) if File.exist?(compressed_file)
           when :skipped
             # Permission denied - don't count as success or failure

@@ -2,6 +2,7 @@ require 'webmock/rspec'
 require 'timecop'
 require 'fakefs/spec_helpers'
 require 'fileutils'
+require 'tmpdir'
 
 require_relative '../app/backup'
 
@@ -47,5 +48,10 @@ def create_test_config(overrides = {})
   config.retain_weekly = overrides[:retain_weekly] || 6
   config.retain_monthly = overrides[:retain_monthly] || 6
   config.retain_yearly = overrides[:retain_yearly] || 6
+  config.encryption_recipients = overrides[:encryption_recipients] || []
+  config.encryption_recipients_file = overrides[:encryption_recipients_file]
   config
 end
+
+TEST_AGE_RECIPIENT = 'age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p'.freeze
+TEST_AGE_RECIPIENT_2 = 'age1lggyhqrw2nlhcxprm67z43rta597azn8gknawjehu9d9dl0jq3yqqvfafg'.freeze
