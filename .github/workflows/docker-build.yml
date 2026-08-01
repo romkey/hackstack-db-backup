@@ -10,6 +10,10 @@ on:
     branches:
       - main
 
+# Least privilege by default; jobs opt into more where they need it.
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
