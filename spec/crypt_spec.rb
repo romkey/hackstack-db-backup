@@ -72,6 +72,28 @@ RSpec.describe BackupService::Crypt do
       expect(err.string).to include('Refusing to overwrite')
       expect(File.read(path)).to eq('AGE-SECRET-KEY-1')
     end
+
+    it 'generates an identity with age-keygen' do
+      path = File.join(@tmpdir, 'new-identity.key')
+      status = instance_double(Process::Status, success?: true)
+      allow(crypt).to receive(:command_available?).with('age-keygen').and_return(true)
+      allow(Open3).to receive(:capture3).with('age-keygen', '-o', path).and_return(
+        ['', "Public key: #{TEST_AGE_RECIPIENT}\n", status]
+      )
+      allow(File).to receive(:chmod)
+
+      expect(crypt.run(['keygen', '-o', path])).to eq(0)
+      expect(out.string).to include("Identity written to #{path}")
+      expect(out.string).to include(TEST_AGE_RECIPIENT)
+      expect(File).to have_received(:chmod).with(0o600, path)
+    end
+
+    it 'reports when age-keygen is unavailable' do
+      allow(crypt).to receive(:command_available?).with('age-keygen').and_return(false)
+
+      expect(crypt.run(['keygen'])).to eq(1)
+      expect(err.string).to include('age-keygen was not found')
+    end
   end
 
   describe 'encrypt' do

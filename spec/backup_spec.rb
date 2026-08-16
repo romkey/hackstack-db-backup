@@ -7,44 +7,44 @@ RSpec.describe BackupService do
   describe BackupService::Config do
     describe '#validate!' do
       it 'returns error when SOURCE_DIRECTORIES is empty' do
-        config = BackupService::Config.new
+        config = described_class.new
         config.source_directories = []
         config.dest_dir = '/test/dest'
 
         errors = config.validate!
-        expect(errors).to include("SOURCE_DIRECTORIES environment variable is not set")
+        expect(errors).to include('SOURCE_DIRECTORIES environment variable is not set')
       end
 
       it 'returns error when DEST_DIR is nil' do
-        config = BackupService::Config.new
+        config = described_class.new
         config.source_directories = ['apps']
         config.dest_dir = nil
 
         errors = config.validate!
-        expect(errors).to include("DEST_DIR environment variable is not set")
+        expect(errors).to include('DEST_DIR environment variable is not set')
       end
 
       it 'returns error when DEST_DIR is empty' do
-        config = BackupService::Config.new
+        config = described_class.new
         config.source_directories = ['apps']
         config.dest_dir = ''
 
         errors = config.validate!
-        expect(errors).to include("DEST_DIR environment variable is not set")
+        expect(errors).to include('DEST_DIR environment variable is not set')
       end
 
       it 'returns error when source directory does not exist' do
-        config = BackupService::Config.new
+        config = described_class.new
         config.parent_dir = '/opt'
         config.source_directories = ['nonexistent']
         config.dest_dir = '/test/dest'
 
         errors = config.validate!
-        expect(errors).to include("Source directory does not exist: /opt/nonexistent")
+        expect(errors).to include('Source directory does not exist: /opt/nonexistent')
       end
 
       it 'returns empty array when configuration is valid' do
-        config = BackupService::Config.new
+        config = described_class.new
         config.parent_dir = '/tmp'
         config.source_directories = ['.']
         config.dest_dir = '/tmp'
@@ -55,16 +55,16 @@ RSpec.describe BackupService do
     end
 
     describe '#parse_source_directories' do
-      let(:config) { BackupService::Config.new }
+      let(:config) { described_class.new }
 
       it 'parses comma-separated values' do
         result = config.parse_source_directories('apps,experiments,local')
-        expect(result).to eq(['apps', 'experiments', 'local'])
+        expect(result).to eq(%w[apps experiments local])
       end
 
       it 'trims whitespace' do
         result = config.parse_source_directories('apps, experiments , local')
-        expect(result).to eq(['apps', 'experiments', 'local'])
+        expect(result).to eq(%w[apps experiments local])
       end
 
       it 'returns empty array for nil' do
@@ -80,7 +80,7 @@ RSpec.describe BackupService do
 
     describe 'encryption recipients' do
       let(:config) do
-        config = BackupService::Config.new
+        config = described_class.new
         config.parent_dir = '/tmp'
         config.source_directories = ['.']
         config.dest_dir = '/tmp'
@@ -191,7 +191,7 @@ RSpec.describe BackupService do
         end
 
         it 'escapes special characters in password' do
-          url = "postgresql://user:p'ss\$word@localhost:5432/mydb"
+          url = "postgresql://user:p'ss$word@localhost:5432/mydb"
           command = backup.build_backup_command(url, '/backup/test.sql')
 
           expect(command).to include("PGPASSWORD=p\\'ss\\$word")
@@ -219,7 +219,7 @@ RSpec.describe BackupService do
         end
 
         it 'escapes special characters in password' do
-          url = "mysql://user:p'ss\$word@localhost:3306/mydb"
+          url = "mysql://user:p'ss$word@localhost:3306/mydb"
           command = backup.build_backup_command(url, '/backup/test.sql')
 
           expect(command).to include("-pp\\'ss\\$word")
@@ -310,7 +310,7 @@ RSpec.describe BackupService do
 
     describe '#backup_pg_globals' do
       let(:config) { create_test_config(quiet: true) }
-      let(:backup) { BackupService::Backup.new(config) }
+      let(:backup) { described_class.new(config) }
       let(:server_info) { { user: 'admin', password: 'secret', host: 'localhost', port: '5432' } }
 
       # $? is thread-global and cannot be stubbed (Process::Status is frozen),
@@ -344,7 +344,7 @@ RSpec.describe BackupService do
 
           result = backup.backup_pg_globals(server_info, backup_file)
 
-          expect(result).to eq(false)
+          expect(result).to be(false)
           expect(backup).to have_received(:post_to_slack)
         end
       end
@@ -541,7 +541,7 @@ RSpec.describe BackupService do
       include FakeFS::SpecHelpers
 
       let(:config) { create_test_config(dest_dir: '/test/dest') }
-      let(:backup) { BackupService::Backup.new(config) }
+      let(:backup) { described_class.new(config) }
 
       before do
         FileUtils.mkdir_p('/test/dest/myapp')
@@ -582,7 +582,7 @@ RSpec.describe BackupService do
       include FakeFS::SpecHelpers
 
       let(:config) { create_test_config(dest_dir: '/test/dest', retain_hourly: 2) }
-      let(:backup) { BackupService::Backup.new(config) }
+      let(:backup) { described_class.new(config) }
       let(:tier_dir) { '/test/dest/myapp/hourly' }
 
       before { FileUtils.mkdir_p(tier_dir) }
@@ -623,17 +623,17 @@ RSpec.describe BackupService do
         stages = backup.pipeline_stages('/tmp/backup.sql', [TEST_AGE_RECIPIENT])
 
         expect(stages).to eq([
-          ['bzip2', '-c', '/tmp/backup.sql'],
-          ['age', '-r', TEST_AGE_RECIPIENT]
-        ])
+                               ['bzip2', '-c', '/tmp/backup.sql'],
+                               ['age', '-r', TEST_AGE_RECIPIENT]
+                             ])
       end
 
       it 'passes every recipient to age' do
         stages = backup.pipeline_stages('/tmp/backup.sql', [TEST_AGE_RECIPIENT, TEST_AGE_RECIPIENT_2])
 
         expect(stages.last).to eq([
-          'age', '-r', TEST_AGE_RECIPIENT, '-r', TEST_AGE_RECIPIENT_2
-        ])
+                                    'age', '-r', TEST_AGE_RECIPIENT, '-r', TEST_AGE_RECIPIENT_2
+                                  ])
       end
 
       it 'builds arguments as an array so filenames are never shell-interpreted' do
@@ -646,14 +646,14 @@ RSpec.describe BackupService do
     describe '#compressed_backup_path' do
       it 'appends .bz2 when encryption is disabled' do
         config = create_test_config
-        backup = BackupService::Backup.new(config)
+        backup = described_class.new(config)
 
         expect(backup.compressed_backup_path('/tmp/backup.sql')).to eq('/tmp/backup.sql.bz2')
       end
 
       it 'appends .bz2.age when encryption is enabled' do
         config = create_test_config(encryption_recipients: [TEST_AGE_RECIPIENT])
-        backup = BackupService::Backup.new(config)
+        backup = described_class.new(config)
 
         expect(backup.compressed_backup_path('/tmp/backup.sql')).to eq('/tmp/backup.sql.bz2.age')
       end
@@ -661,7 +661,10 @@ RSpec.describe BackupService do
 
     describe '#compress_and_encrypt_file' do
       around do |example|
-        Dir.mktmpdir { |dir| @tmpdir = dir; example.run }
+        Dir.mktmpdir do |dir|
+          @tmpdir = dir
+          example.run
+        end
       end
 
       let(:source) { File.join(@tmpdir, 'backup-db-20240115120000.sql') }
@@ -670,7 +673,7 @@ RSpec.describe BackupService do
 
       context 'without encryption' do
         let(:config) { create_test_config(quiet: true) }
-        let(:backup) { BackupService::Backup.new(config) }
+        let(:backup) { described_class.new(config) }
 
         it 'compresses and removes the plaintext dump' do
           expect(backup.compress_and_encrypt_file(source)).to be true
@@ -688,7 +691,7 @@ RSpec.describe BackupService do
 
       context 'when a pipeline stage fails' do
         let(:config) { create_test_config(quiet: true) }
-        let(:backup) { BackupService::Backup.new(config) }
+        let(:backup) { described_class.new(config) }
 
         before do
           allow(backup).to receive(:pipeline_stages).and_return([['false']])
@@ -721,10 +724,11 @@ RSpec.describe BackupService do
 
       context 'when the encryption tool is missing' do
         let(:config) { create_test_config(quiet: true, encryption_recipients: [TEST_AGE_RECIPIENT]) }
-        let(:backup) { BackupService::Backup.new(config) }
+        let(:backup) { described_class.new(config) }
 
         before do
-          allow(backup).to receive(:pipeline_stages).and_return([['bzip2', '-c', source], ['definitely-not-a-real-binary']])
+          allow(backup).to receive(:pipeline_stages).and_return([['bzip2', '-c', source],
+                                                                 ['definitely-not-a-real-binary']])
           allow(backup).to receive(:post_to_slack)
         end
 
@@ -740,7 +744,7 @@ RSpec.describe BackupService do
 
       context 'when the output is not a valid age file' do
         let(:config) { create_test_config(quiet: true, encryption_recipients: [TEST_AGE_RECIPIENT]) }
-        let(:backup) { BackupService::Backup.new(config) }
+        let(:backup) { described_class.new(config) }
 
         before do
           # cat succeeds but produces bzip2 output rather than an age file
@@ -763,7 +767,10 @@ RSpec.describe BackupService do
 
     describe '.age_file?' do
       around do |example|
-        Dir.mktmpdir { |dir| @tmpdir = dir; example.run }
+        Dir.mktmpdir do |dir|
+          @tmpdir = dir
+          example.run
+        end
       end
 
       it 'recognises an age file by its version header' do
@@ -829,20 +836,21 @@ RSpec.describe BackupService do
         urls = backup.parse_database_urls('/test/app/.env')
 
         expect(urls).to eq([
-          'postgresql://u:p@h:5432/db1',
-          'mysql://u:p@h:3306/db2'
-        ])
+                             'postgresql://u:p@h:5432/db1',
+                             'mysql://u:p@h:3306/db2'
+                           ])
       end
 
       it 'parses multiple URLs with quotes around each' do
-        File.write('/test/app/.env', "BACKUP_DATABASE_URLS=\"postgresql://u:p@h:5432/db1\",\"mysql://u:p@h:3306/db2\"\n")
+        File.write('/test/app/.env',
+                   "BACKUP_DATABASE_URLS=\"postgresql://u:p@h:5432/db1\",\"mysql://u:p@h:3306/db2\"\n")
 
         urls = backup.parse_database_urls('/test/app/.env')
 
         expect(urls).to eq([
-          'postgresql://u:p@h:5432/db1',
-          'mysql://u:p@h:3306/db2'
-        ])
+                             'postgresql://u:p@h:5432/db1',
+                             'mysql://u:p@h:3306/db2'
+                           ])
       end
 
       it 'returns empty array when BACKUP_DATABASE_URLS is not present' do
@@ -859,9 +867,9 @@ RSpec.describe BackupService do
         urls = backup.parse_database_urls('/test/app/.env')
 
         expect(urls).to eq([
-          'postgresql://u:p@h:5432/db1',
-          'mysql://u:p@h:3306/db2'
-        ])
+                             'postgresql://u:p@h:5432/db1',
+                             'mysql://u:p@h:3306/db2'
+                           ])
       end
 
       it 'handles other lines in the env file' do
@@ -909,7 +917,7 @@ RSpec.describe BackupService do
       include FakeFS::SpecHelpers
 
       let(:config) { create_test_config(dest_dir: '/test/dest', quiet: true) }
-      let(:backup) { BackupService::Backup.new(config) }
+      let(:backup) { described_class.new(config) }
 
       before do
         FileUtils.mkdir_p('/test/dest/myapp')
@@ -948,6 +956,18 @@ RSpec.describe BackupService do
 
         expect(File.read(existing_file)).to eq('existing backup')
       end
+
+      it 'distributes encrypted backups to all tier directories' do
+        backup_file = '/test/dest/myapp/backup-db-20240115120000.sql.bz2.age'
+        File.write(backup_file, "#{BackupService::AGE_HEADER}\nencrypted")
+
+        backup.distribute_backup_to_tiers(backup_file, '/test/dest/myapp')
+
+        BackupService::Backup::TIERS.each do |tier|
+          tier_file = "/test/dest/myapp/#{tier}/backup-db-20240115120000.sql.bz2.age"
+          expect(File.exist?(tier_file)).to be true
+        end
+      end
     end
 
     describe '#cleanup_old_backups' do
@@ -964,7 +984,7 @@ RSpec.describe BackupService do
           retain_yearly: 1
         )
       end
-      let(:backup) { BackupService::Backup.new(config) }
+      let(:backup) { described_class.new(config) }
 
       before do
         FileUtils.mkdir_p('/test/dest/myapp/hourly')
@@ -1013,15 +1033,15 @@ RSpec.describe BackupService do
 
     describe '#post_to_slack' do
       let(:config) { create_test_config(slack_webhook_url: 'https://hooks.slack.com/services/T00/B00/XXX', quiet: true) }
-      let(:backup) { BackupService::Backup.new(config) }
+      let(:backup) { described_class.new(config) }
 
       it 'sends message to Slack webhook' do
         stub = stub_request(:post, 'https://hooks.slack.com/services/T00/B00/XXX')
-          .with(
-            body: { text: 'Test message' }.to_json,
-            headers: { 'Content-Type' => 'application/json' }
-          )
-          .to_return(status: 200)
+               .with(
+                 body: { text: 'Test message' }.to_json,
+                 headers: { 'Content-Type' => 'application/json' }
+               )
+               .to_return(status: 200)
 
         backup.post_to_slack('Test message')
 
@@ -1030,7 +1050,7 @@ RSpec.describe BackupService do
 
       it 'does nothing when webhook URL is nil' do
         config = create_test_config(slack_webhook_url: nil)
-        backup = BackupService::Backup.new(config)
+        backup = described_class.new(config)
 
         expect { backup.post_to_slack('Test message') }.not_to raise_error
         expect(WebMock).not_to have_requested(:post, /slack/)
@@ -1038,7 +1058,7 @@ RSpec.describe BackupService do
 
       it 'does nothing when webhook URL is empty' do
         config = create_test_config(slack_webhook_url: '')
-        backup = BackupService::Backup.new(config)
+        backup = described_class.new(config)
 
         expect { backup.post_to_slack('Test message') }.not_to raise_error
         expect(WebMock).not_to have_requested(:post, /slack/)
@@ -1061,7 +1081,7 @@ RSpec.describe BackupService do
 
     describe '#backup_qdrant' do
       let(:config) { create_test_config(quiet: true) }
-      let(:backup) { BackupService::Backup.new(config) }
+      let(:backup) { described_class.new(config) }
 
       it 'creates snapshot, downloads, and deletes remote snapshot' do
         stub_request(:post, 'http://localhost:6333/collections/my_collection/snapshots')
@@ -1188,27 +1208,27 @@ RSpec.describe BackupService do
 
     describe '#backup_database' do
       let(:config) { create_test_config(quiet: true) }
-      let(:backup) { BackupService::Backup.new(config) }
+      let(:backup) { described_class.new(config) }
 
       context 'with Qdrant URL' do
         it 'calls backup_qdrant and compress_and_encrypt_file on success' do
-          allow(backup).to receive(:backup_qdrant).and_return(true)
-          allow(backup).to receive(:compress_and_encrypt_file).and_return(true)
+          allow(backup).to receive_messages(backup_qdrant: true, compress_and_encrypt_file: true)
 
           result = backup.backup_database('qdrant://localhost:6333/collection', '/tmp/backup.snapshot')
 
           expect(result).to be true
-          expect(backup).to have_received(:backup_qdrant).with('localhost', '6333', 'collection', nil, '/tmp/backup.snapshot')
+          expect(backup).to have_received(:backup_qdrant).with('localhost', '6333', 'collection', nil,
+                                                               '/tmp/backup.snapshot')
           expect(backup).to have_received(:compress_and_encrypt_file).with('/tmp/backup.snapshot')
         end
 
         it 'extracts API key from URL' do
-          allow(backup).to receive(:backup_qdrant).and_return(true)
-          allow(backup).to receive(:compress_and_encrypt_file).and_return(true)
+          allow(backup).to receive_messages(backup_qdrant: true, compress_and_encrypt_file: true)
 
           backup.backup_database('qdrant://my-key@localhost:6333/collection', '/tmp/backup.snapshot')
 
-          expect(backup).to have_received(:backup_qdrant).with('localhost', '6333', 'collection', 'my-key', '/tmp/backup.snapshot')
+          expect(backup).to have_received(:backup_qdrant).with('localhost', '6333', 'collection', 'my-key',
+                                                               '/tmp/backup.snapshot')
         end
 
         it 'does not compress on failure' do
@@ -1222,8 +1242,7 @@ RSpec.describe BackupService do
         end
 
         it 'reports failure when encryption fails' do
-          allow(backup).to receive(:backup_qdrant).and_return(true)
-          allow(backup).to receive(:compress_and_encrypt_file).and_return(false)
+          allow(backup).to receive_messages(backup_qdrant: true, compress_and_encrypt_file: false)
 
           result = backup.backup_database('qdrant://localhost:6333/collection', '/tmp/backup.snapshot')
 

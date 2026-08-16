@@ -88,7 +88,7 @@ module BackupService
         return 1
       end
 
-      File.chmod(0600, @key_path)
+      File.chmod(0o600, @key_path)
       public_key = extract_public_key(@key_path) || stderr[/age1[0-9a-z]{58}/]
 
       @out.puts "Identity written to #{@key_path} (mode 0600)"
@@ -131,7 +131,7 @@ module BackupService
 
       @out.puts "Encrypted #{counts[:encrypted]}, skipped #{counts[:skipped]}, failed #{counts[:failed]}"
       @out.puts 'Dry run: no files were changed.' if @dry_run
-      (counts[:failed] > 0 || !missing.empty?) ? 1 : 0
+      counts[:failed].positive? || !missing.empty? ? 1 : 0
     end
 
     def decrypt(argv)
@@ -171,7 +171,7 @@ module BackupService
 
       progress.puts "Decrypted #{counts[:decrypted]}, skipped #{counts[:skipped]}, failed #{counts[:failed]}"
       progress.puts 'Dry run: no files were changed.' if @dry_run
-      (counts[:failed] > 0 || !missing.empty?) ? 1 : 0
+      counts[:failed].positive? || !missing.empty? ? 1 : 0
     end
 
     # Encryption is destructive, so the plaintext is only removed after age
@@ -199,13 +199,9 @@ module BackupService
       begin
         _stdout, stderr, status = Open3.capture3(*command)
 
-        unless status.success?
-          return fail_encrypt(file, temp_file, stderr.strip)
-        end
+        return fail_encrypt(file, temp_file, stderr.strip) unless status.success?
 
-        unless BackupService.age_file?(temp_file)
-          return fail_encrypt(file, temp_file, 'output is not a valid age file')
-        end
+        return fail_encrypt(file, temp_file, 'output is not a valid age file') unless BackupService.age_file?(temp_file)
 
         mtime = File.mtime(file)
         atime = File.atime(file)
@@ -227,6 +223,7 @@ module BackupService
 
       if @stdout_output
         return :skipped if @dry_run
+
         success = system('age', '-d', '-i', @identity, file)
         return success ? :decrypted : :failed
       end
@@ -248,7 +245,7 @@ module BackupService
         _stdout, stderr, status = Open3.capture3('age', '-d', '-i', @identity, '-o', temp_file, file)
 
         unless status.success?
-          File.delete(temp_file) if File.exist?(temp_file)
+          FileUtils.rm_f(temp_file)
           @err.puts "Failed to decrypt #{file}: #{stderr.strip}"
           return :failed
         end
@@ -257,7 +254,7 @@ module BackupService
         progress.puts "Decrypted #{file} -> #{output_file}"
         :decrypted
       rescue StandardError => e
-        File.delete(temp_file) if File.exist?(temp_file)
+        FileUtils.rm_f(temp_file)
         @err.puts "Failed to decrypt #{file}: #{e.message}"
         :failed
       end
@@ -272,7 +269,7 @@ module BackupService
     end
 
     def fail_encrypt(file, temp_file, reason)
-      File.delete(temp_file) if File.exist?(temp_file)
+      FileUtils.rm_f(temp_file)
       @err.puts "Failed to encrypt #{file}: #{reason}"
       :failed
     end
@@ -289,7 +286,7 @@ module BackupService
       end
 
       if recipients.empty?
-        recipients = BackupService.parse_recipient_list(ENV['BACKUP_ENCRYPTION_RECIPIENTS'])
+        recipients = BackupService.parse_recipient_list(ENV.fetch('BACKUP_ENCRYPTION_RECIPIENTS', nil))
       end
 
       recipients = recipients.uniq
@@ -311,7 +308,7 @@ module BackupService
     def resolve_paths(paths)
       return paths unless paths.empty?
 
-      dest_dir = ENV['DEST_DIR']
+      dest_dir = ENV.fetch('DEST_DIR', nil)
       if dest_dir.nil? || dest_dir.empty?
         @err.puts 'No paths given and DEST_DIR is not set.'
         return nil
@@ -340,7 +337,7 @@ module BackupService
 
     def extract_public_key(path)
       File.readlines(path).each do |line|
-        return $1 if line =~ /public key:\s*(\S+)/i
+        return ::Regexp.last_match(1) if line =~ /public key:\s*(\S+)/i
       end
       nil
     rescue StandardError
@@ -355,6 +352,4 @@ module BackupService
   end
 end
 
-if __FILE__ == $0
-  exit(BackupService::Crypt.new.run(ARGV))
-end
+exit(BackupService::Crypt.new.run(ARGV)) if __FILE__ == $PROGRAM_NAME

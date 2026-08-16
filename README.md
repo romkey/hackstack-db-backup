@@ -1,5 +1,11 @@
 # db-backup
 
+[![CI](https://github.com/romkey/hackstack-db-backup/actions/workflows/ci.yml/badge.svg)](https://github.com/romkey/hackstack-db-backup/actions/workflows/ci.yml)
+[![Lint](https://img.shields.io/github/actions/workflow/status/romkey/hackstack-db-backup/ci.yml?branch=main&label=lint&logo=rubocop&logoColor=white)](https://github.com/romkey/hackstack-db-backup/actions/workflows/ci.yml)
+[![Docker](https://img.shields.io/github/actions/workflow/status/romkey/hackstack-db-backup/ci.yml?branch=main&label=docker&logo=docker&logoColor=white)](https://github.com/romkey/hackstack-db-backup/pkgs/container/hackstack-db-backup)
+[![Ruby](https://img.shields.io/badge/Ruby-3.4-red?logo=ruby&logoColor=white)](.ruby-version)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A Ruby-based database backup utility designed for Docker-based multi-application environments. Runs continuously, automatically discovering and backing up databases from application directories at configurable intervals, with tiered retention policies for efficient storage management.
 
 ## Features
@@ -476,6 +482,8 @@ docker compose -f docker-compose.test.yml up --build
 
 **Using local Ruby:**
 
+Requires Ruby 3.4 (see `.ruby-version`). With [rbenv](https://github.com/rbenv/rbenv) or [asdf](https://asdf-vm.com/):
+
 ```bash
 bundle install
 bundle exec rspec
@@ -487,12 +495,20 @@ bundle exec rspec
 bundle exec rspec --format documentation
 ```
 
+**Run the linter:**
+
+```bash
+bundle exec rubocop
+```
+
 ### Project Files
 
 | File | Description |
 |------|-------------|
 | `app/backup.rb` | Backup service |
 | `app/backup-crypt.rb` | Key generation, encryption, and decryption utility |
+| `.rubocop.yml` | RuboCop lint configuration |
+| `.ruby-version` | Ruby version for local development (3.4) |
 | `docker-compose.example.yml` | Example production compose file with NFS storage |
 | `docker-compose.test.yml` | Compose file for running tests in Docker |
 | `Dockerfile` | Production container image |
@@ -546,4 +562,4 @@ The `pg_dumpall --globals-only` command requires superuser privileges. Either:
 
 ## License
 
-MIT
+[MIT](LICENSE)

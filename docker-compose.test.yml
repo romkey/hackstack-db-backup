@@ -7,6 +7,7 @@ services:
       - ./app:/app:ro
       - ./spec:/spec:ro
       - ./Gemfile:/Gemfile:ro
+      - ./Gemfile.lock:/Gemfile.lock:ro
       - ./.rspec:/.rspec:ro
       - bundle_cache:/usr/local/bundle
     working_dir: /

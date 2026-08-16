@@ -20,16 +20,16 @@ RSpec.configure do |config|
   config.disable_monkey_patching!
   config.warnings = true
 
-  config.default_formatter = "doc" if config.files_to_run.one?
+  config.default_formatter = 'doc' if config.files_to_run.one?
 
   config.order = :random
   Kernel.srand config.seed
 
-  config.before(:each) do
+  config.before do
     WebMock.disable_net_connect!(allow_localhost: true)
   end
 
-  config.after(:each) do
+  config.after do
     Timecop.return
   end
 end

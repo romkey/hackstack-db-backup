@@ -1,8 +1,13 @@
 source 'https://rubygems.org'
 
+group :development, :test do
+  gem 'rubocop', '~> 1.81', require: false
+  gem 'rubocop-rspec', '~> 3.8', require: false
+end
+
 group :test do
+  gem 'fakefs', '~> 3.2'
   gem 'rspec', '~> 3.13'
-  gem 'webmock', '~> 3.19'
   gem 'timecop', '~> 0.9'
-  gem 'fakefs', '~> 2.5'
+  gem 'webmock', '~> 3.26'
 end

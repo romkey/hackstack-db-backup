@@ -1,11 +1,12 @@
-FROM ruby:3.2-alpine
+FROM ruby:3.4-alpine
 
 RUN apk add --no-cache build-base
 
 WORKDIR /
 
-COPY Gemfile ./
-RUN bundle install
+COPY Gemfile Gemfile.lock ./
+RUN gem install bundler -v "$(awk '/^BUNDLED WITH/{getline; print $1}' Gemfile.lock)" \
+    && bundle install
 
 COPY .rspec ./
 COPY spec/ ./spec/

@@ -1,0 +1,91 @@
+plugins:
+  - rubocop-rspec
+
+AllCops:
+  NewCops: enable
+  TargetRubyVersion: 3.4
+  Exclude:
+    - 'vendor/**/*'
+    - 'tmp/**/*'
+
+Style/Documentation:
+  Enabled: false
+
+Style/HashEachMethods:
+  Enabled: false
+
+Style/CollectionCompact:
+  Enabled: false
+
+Style/FrozenStringLiteralComment:
+  Enabled: false
+
+# Command strings and shell pipelines are intentionally long.
+Layout/LineLength:
+  Max: 120
+  Exclude:
+    - 'app/backup.rb'
+
+# Single-file service; keep lint useful without forcing a refactor.
+Metrics/BlockLength:
+  Exclude:
+    - 'app/**/*'
+    - 'spec/**/*'
+
+Metrics/ClassLength:
+  Max: 900
+  Exclude:
+    - 'app/backup.rb'
+
+Metrics/MethodLength:
+  Max: 45
+  Exclude:
+    - 'app/backup.rb'
+
+Metrics/AbcSize:
+  Max: 40
+  Exclude:
+    - 'app/backup.rb'
+    - 'app/backup-crypt.rb'
+
+Metrics/CyclomaticComplexity:
+  Max: 15
+  Exclude:
+    - 'app/backup.rb'
+
+Metrics/PerceivedComplexity:
+  Max: 15
+  Exclude:
+    - 'app/backup.rb'
+
+Naming/PredicateMethod:
+  Exclude:
+    - 'app/backup.rb'
+
+Lint/DuplicateBranch:
+  Exclude:
+    - 'app/backup.rb'
+
+RSpec/MultipleMemoizedHelpers:
+  Max: 10
+
+RSpec/NestedGroups:
+  Max: 5
+
+RSpec/ExampleLength:
+  Max: 20
+
+RSpec/MultipleExpectations:
+  Max: 7
+
+RSpec/InstanceVariable:
+  Enabled: false
+
+RSpec/ContextWording:
+  Enabled: false
+
+RSpec/SpecFilePathFormat:
+  Exclude:
+    - 'spec/backup_spec.rb'
+    - 'spec/backup_service_spec.rb'
+    - 'spec/crypt_spec.rb'
