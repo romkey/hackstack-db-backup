@@ -872,6 +872,34 @@ RSpec.describe BackupService do
                            ])
       end
 
+      it 'parses per-URL quoted URLs with commas inside a database name' do
+        File.write('/test/app/.env', "BACKUP_DATABASE_URLS=\"postgresql://u:p@h:5432/my,db\"\n")
+
+        urls = backup.parse_database_urls('/test/app/.env')
+
+        expect(urls).to eq(['postgresql://u:p@h:5432/my,db'])
+      end
+
+      it 'parses a whole-value quoted list of multiple URLs' do
+        File.write('/test/app/.env',
+                   "BACKUP_DATABASE_URLS=\"postgresql://u:p@h:5432/db1,mysql://u:p@h:3306/db2\"\n")
+
+        urls = backup.parse_database_urls('/test/app/.env')
+
+        expect(urls).to eq([
+                             'postgresql://u:p@h:5432/db1',
+                             'mysql://u:p@h:3306/db2'
+                           ])
+      end
+
+      it 'ignores commented-out BACKUP_DATABASE_URLS lines' do
+        File.write('/test/app/.env', "# BACKUP_DATABASE_URLS=postgresql://u:p@h:5432/db\n")
+
+        urls = backup.parse_database_urls('/test/app/.env')
+
+        expect(urls).to eq([])
+      end
+
       it 'handles other lines in the env file' do
         content = <<~ENV
           DATABASE_URL=postgresql://other:other@host:5432/other

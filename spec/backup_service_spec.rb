@@ -71,4 +71,49 @@ RSpec.describe BackupService do
       expect(described_class.age_file?(File.join(@tmpdir, 'missing'))).to be false
     end
   end
+
+  describe '.split_database_url_list' do
+    it 'parses unquoted comma-separated URLs' do
+      value = 'postgresql://u:p@h:5432/db1,mysql://u:p@h:3306/db2'
+      expect(described_class.split_database_url_list(value)).to eq([
+                                                                     'postgresql://u:p@h:5432/db1',
+                                                                     'mysql://u:p@h:3306/db2'
+                                                                   ])
+    end
+
+    it 'parses per-URL quoted URLs' do
+      value = '"postgresql://u:p@h:5432/db1","mysql://u:p@h:3306/db2"'
+      expect(described_class.split_database_url_list(value)).to eq([
+                                                                     'postgresql://u:p@h:5432/db1',
+                                                                     'mysql://u:p@h:3306/db2'
+                                                                   ])
+    end
+
+    it 'parses a whole-value quoted list of multiple URLs' do
+      value = '"postgresql://u:p@h:5432/db1,mysql://u:p@h:3306/db2"'
+      expect(described_class.split_database_url_list(value)).to eq([
+                                                                     'postgresql://u:p@h:5432/db1',
+                                                                     'mysql://u:p@h:3306/db2'
+                                                                   ])
+    end
+
+    it 'preserves commas inside a quoted URL' do
+      value = '"postgresql://u:p@h:5432/my,db"'
+      expect(described_class.split_database_url_list(value)).to eq(['postgresql://u:p@h:5432/my,db'])
+    end
+
+    it 'preserves commas inside a quoted password' do
+      value = '"postgresql://u:p,ass@h:5432/db"'
+      expect(described_class.split_database_url_list(value)).to eq(['postgresql://u:p,ass@h:5432/db'])
+    end
+
+    it 'supports postgres, mysql2, and qdrant schemes in one line' do
+      value = 'postgres://u:p@h/db1,mysql2://u:p@h/db2,qdrant://h:6333/coll'
+      expect(described_class.split_database_url_list(value)).to eq([
+                                                                     'postgres://u:p@h/db1',
+                                                                     'mysql2://u:p@h/db2',
+                                                                     'qdrant://h:6333/coll'
+                                                                   ])
+    end
+  end
 end

@@ -3,7 +3,7 @@
 [![CI](https://github.com/romkey/hackstack-db-backup/actions/workflows/ci.yml/badge.svg)](https://github.com/romkey/hackstack-db-backup/actions/workflows/ci.yml)
 [![Lint](https://img.shields.io/github/actions/workflow/status/romkey/hackstack-db-backup/ci.yml?branch=main&label=lint&logo=rubocop&logoColor=white)](https://github.com/romkey/hackstack-db-backup/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/github/actions/workflow/status/romkey/hackstack-db-backup/ci.yml?branch=main&label=docker&logo=docker&logoColor=white)](https://github.com/romkey/hackstack-db-backup/pkgs/container/hackstack-db-backup)
-[![Ruby](https://img.shields.io/badge/Ruby-3.4-red?logo=ruby&logoColor=white)](.ruby-version)
+[![Ruby](https://img.shields.io/badge/Ruby-4.0-red?logo=ruby&logoColor=white)](.ruby-version)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A Ruby-based database backup utility designed for Docker-based multi-application environments. Runs continuously, automatically discovering and backing up databases from application directories at configurable intervals, with tiered retention policies for efficient storage management.
@@ -142,10 +142,26 @@ NFS_OPTIONS=nfsvers=4,soft,rw
 Each application directory under `PARENT_DIR` should contain a `.env` file with:
 
 ```bash
-BACKUP_DATABASE_URLS="postgresql://user:pass@host:5432/dbname,mysql://user:pass@host:3306/dbname"
+BACKUP_DATABASE_URLS="postgresql://user:pass@host:5432/db1","mysql://user:pass@host:3306/db2"
 ```
 
-Multiple database URLs can be specified as a comma-separated list.
+Multiple database URLs can be specified as a comma-separated list. **Quote each URL** when a URL itself contains commas (for example in a database name or password), or when Docker/.env tooling mangles unquoted values:
+
+```bash
+# Recommended when listing multiple URLs
+BACKUP_DATABASE_URLS="postgresql://user:pass@host:5432/db1","mysql://user:pass@host:3306/db2"
+
+# Also works: one pair of quotes around the whole list (no commas inside individual URLs)
+BACKUP_DATABASE_URLS="postgresql://user:pass@host:5432/db1,mysql://user:pass@host:3306/db2"
+
+# Required when a database name or password contains a comma
+BACKUP_DATABASE_URLS="postgresql://user:pass@host:5432/my,db"
+
+# Unquoted comma-separated URLs work when no URL contains a bare comma
+BACKUP_DATABASE_URLS=postgresql://user:pass@host:5432/db1,mysql://user:pass@host:3306/db2
+```
+
+This is read from each app's `.env` file on the mounted volume; it is not passed through the backup container's own environment.
 
 ### Supported Database URL Formats
 
@@ -482,7 +498,7 @@ docker compose -f docker-compose.test.yml up --build
 
 **Using local Ruby:**
 
-Requires Ruby 3.4 (see `.ruby-version`). With [rbenv](https://github.com/rbenv/rbenv) or [asdf](https://asdf-vm.com/):
+Requires Ruby 4.0 (see `.ruby-version`). With [rbenv](https://github.com/rbenv/rbenv) or [asdf](https://asdf-vm.com/):
 
 ```bash
 bundle install
@@ -508,7 +524,7 @@ bundle exec rubocop
 | `app/backup.rb` | Backup service |
 | `app/backup-crypt.rb` | Key generation, encryption, and decryption utility |
 | `.rubocop.yml` | RuboCop lint configuration |
-| `.ruby-version` | Ruby version for local development (3.4) |
+| `.ruby-version` | Ruby version for local development (4.0) |
 | `docker-compose.example.yml` | Example production compose file with NFS storage |
 | `docker-compose.test.yml` | Compose file for running tests in Docker |
 | `Dockerfile` | Production container image |

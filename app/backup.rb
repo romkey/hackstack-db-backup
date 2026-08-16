@@ -39,6 +39,55 @@ module BackupService
     false
   end
 
+  # When a whole-line quoted value contains multiple URLs, split on commas that
+  # introduce the next scheme rather than commas inside a URL.
+  URL_LIST_SCHEME_SPLIT = %r{,(?=(?:postgres(?:ql)?|mysql2?|sqlite|qdrant)://)}
+
+  def self.split_database_url_list(value)
+    return [] if value.nil? || value.strip.empty?
+
+    urls = split_quoted_csv(value.strip)
+    if urls.size == 1 && urls.first.include?(',')
+      combined = urls.first
+      urls = combined.split(URL_LIST_SCHEME_SPLIT) if combined.scan(%r{[a-z]+://}).size > 1
+    end
+    urls.map { |url| url.gsub(/\A["']|["']\z/, '') }
+  end
+
+  def self.split_quoted_csv(value)
+    urls = []
+    current = +''
+    in_quotes = false
+    quote_char = nil
+
+    value.each_char do |char|
+      case char
+      when '"', "'"
+        if in_quotes && char == quote_char
+          in_quotes = false
+          quote_char = nil
+        elsif !in_quotes
+          in_quotes = true
+          quote_char = char
+        else
+          current << char
+        end
+      when ','
+        if in_quotes
+          current << char
+        else
+          urls << current.strip unless current.strip.empty?
+          current = +''
+        end
+      else
+        current << char
+      end
+    end
+
+    urls << current.strip unless current.strip.empty?
+    urls
+  end
+
   class Config
     attr_accessor :parent_dir, :source_directories, :dest_dir, :slack_webhook_url, :quiet, :debug,
                   :backup_interval_minutes, :retain_hourly, :retain_daily,
@@ -380,13 +429,12 @@ module BackupService
     def parse_database_urls(env_file)
       db_urls = []
       File.foreach(env_file) do |line|
-        if line =~ /^BACKUP_DATABASE_URLS=(.*)$/
-          urls = ::Regexp.last_match(1).strip
-          urls = urls[1..-2] if (urls.start_with?('"') && urls.end_with?('"')) ||
-                                (urls.start_with?("'") && urls.end_with?("'"))
-          db_urls = urls.split(',').map { |url| url.strip.gsub(/["']/, '') }
-          break
-        end
+        next if line.strip.start_with?('#')
+
+        next unless line =~ /^BACKUP_DATABASE_URLS=(.*)$/
+
+        db_urls = BackupService.split_database_url_list(::Regexp.last_match(1))
+        break
       end
       db_urls
     end
